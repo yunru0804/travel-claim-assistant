@@ -1,7 +1,13 @@
-"""建立 Policies / Flights / Weather 三張 DynamoDB 表,並寫入假資料。
+"""建立旅程管理 Lambda 用的 DynamoDB 表,並寫入假資料。
 
 在 AWS CloudShell 執行:  python3 seed_dynamodb.py
 可重複執行:表已存在就跳過建立,資料用 put_item 覆蓋。
+Policies / Flights / Weather 沿用 legacy 版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
+
+測試帳號:
+  user-001:正常狀態旅程(BR192)
+  user-002:沒有旅程,GET 回 {}
+  user-003:異常狀態旅程(CI100 延誤 5 小時,已達理賠門檻並立案)
 """
 from decimal import Decimal  # boto3 的 DynamoDB 不接受 float,數字要用 Decimal
 
@@ -11,55 +17,98 @@ dynamodb = boto3.resource("dynamodb")
 
 # ---------- 資料表定義:名稱 -> (主鍵 PK, 排序鍵 SK) ----------
 TABLES = {
+    "Trips": ("sub", None),
     "Policies": ("sub", None),
     "Flights": ("flight_no", "departure_date"),
     "Weather": ("city", None),
+    "ExchangeRates": ("currency", None),
 }
 
 # ---------- 假資料 ----------
+POLICY = {
+    "policy_number": "TA-20261103-01",
+    "policyholder_name": "王小明",
+    "product_name": "國泰安心遊日本 5 日型",
+    "coverage_start": "2026-11-01",
+    "coverage_end": "2026-11-30",
+    "coverages": [
+        {"label": "海外突發醫療", "amount": 1000000},
+        {"label": "班機延誤保險金", "amount": 5000},
+    ],
+}
+
 POLICIES = [
+    {"sub": "user-001", "policies": [POLICY]},
+    {"sub": "user-003", "policies": [dict(POLICY, policy_number="TA-20261103-03", policyholder_name="陳美玲")]},
+]
+
+TRIPS = [
     {
         "sub": "user-001",
-        "policies": [
-            {
-                "policy_id": "P1",
-                "product_code": "TRAVEL-A",
-                "product_version": "2025-04",
-                "coverage_start": "2026-11-01",
-                "coverage_end": "2026-11-10",
-                "itinerary": [
-                    {"flight_no": "BR198", "departure_date": "2026-11-01", "destination": "Tokyo"},
-                    {"flight_no": "BR197", "departure_date": "2026-11-08", "destination": "Taipei"},
-                ],
-            }
-        ],
+        "flight_number": "BR192", "departure_date": "2026-11-20",
+        "created_at": "2026-11-02T03:00:00Z", "updated_at": "2026-11-02T03:00:00Z",
     },
-    # user-002 刻意不放,用來測試「找不到使用者 -> 404」
+    {
+        "sub": "user-003",
+        "flight_number": "CI100", "departure_date": "2026-11-20",
+        "created_at": "2026-11-02T03:00:00Z", "updated_at": "2026-11-20T05:15:00Z",
+        # 以下三個欄位之後由事件驅動流程寫入,這裡先手動放假資料
+        "trip_status": {
+            "state": "ABNORMAL", "type": "FLIGHT_DELAY",
+            "message": "航班延誤監測中・已超過 4 小時", "updated_at": "2026-11-20T05:15:00Z",
+        },
+        "disruption": {
+            "type": "FLIGHT_DELAY", "title": "航班延誤",
+            "description": "航班預計延誤 5 小時,請確認最新航班安排並保留航空公司異動通知。",
+            "occurred_at": "2026-11-20T01:15:00Z", "delay_minutes": 300,
+        },
+        "delay_claim": {
+            "eligible": True, "estimated_benefit_amount": 5000,
+            "case_status": "CREATED", "case_status_text": "系統已快速立案",
+            "checklist": [
+                {"label": "原班機登機證", "is_ready": True},
+                {"label": "航司班機延誤證明書", "is_ready": False},
+            ],
+        },
+    },
 ]
 
 FLIGHTS = [
     {
-        "flight_no": "BR198", "departure_date": "2026-11-01",
-        "status": "DELAYED", "delay_minutes": 45,
-        "scheduled_departure": "2026-11-01T09:30:00+08:00",
-        "last_updated": "2026-11-01T08:10:00+08:00",
-        "last_notified_level": 2,  # 事件驅動用的內部欄位,Lambda 不會回傳給前端
+        "flight_no": "BR192", "departure_date": "2026-11-20",
+        "origin_airport": "TPE", "destination_airport": "NRT",
+        "scheduled_departure": "2026-11-20T10:15:00+08:00",
+        "scheduled_arrival": "2026-11-20T14:30:00+09:00",
+        "terminal_gate_text": "第一航廈・登機門 B6",
     },
     {
-        "flight_no": "BR197", "departure_date": "2026-11-08",
-        "status": "ON_TIME", "delay_minutes": 0,
-        "scheduled_departure": "2026-11-08T15:00:00+09:00",
-        "last_updated": "2026-11-08T12:00:00+09:00",
-        "last_notified_level": 0,
+        "flight_no": "CI100", "departure_date": "2026-11-20",
+        "origin_airport": "TPE", "destination_airport": "NRT",
+        "scheduled_departure": "2026-11-20T10:15:00+08:00",
+        "scheduled_arrival": "2026-11-20T14:30:00+09:00",
+        "estimated_arrival": "2026-11-20T19:30:00+09:00",
+        "terminal_gate_text": "第一航廈・登機門 B6",
+        "baggage_carousel_text": "行李轉盤 4 號",
     },
 ]
 
 WEATHER = [
-    {"city": "Tokyo", "summary": "sunny", "temperature_c": 18.5},
-    {"city": "Taipei", "summary": "rainy", "temperature_c": 24},
+    {"city": "東京", "condition_code": "PARTLY_CLOUDY", "temperature_c": 22, "rain_probability_percent": 10},
+    {"city": "大阪", "condition_code": "RAIN", "temperature_c": 18.5, "rain_probability_percent": 80},
 ]
 
-DATA = {"Policies": POLICIES, "Flights": FLIGHTS, "Weather": WEATHER}
+EXCHANGE_RATES = [
+    {"currency": "JPY", "rate_per_twd": 4.85},
+    {"currency": "KRW", "rate_per_twd": 43.2},
+]
+
+DATA = {
+    "Trips": TRIPS,
+    "Policies": POLICIES,
+    "Flights": FLIGHTS,
+    "Weather": WEATHER,
+    "ExchangeRates": EXCHANGE_RATES,
+}
 
 
 def to_decimal(value):
