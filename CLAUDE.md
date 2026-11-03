@@ -10,7 +10,8 @@
 - 事件驅動(與 Bedrock 無關):EventBridge Scheduler → CheckFlight → EventBridge Bus → ClaimEligible → EventBridge Bus → Notification → SNS。航班監控狀態存 DynamoDB。
 
 ## API 規格
-- `05-journey-start.md`(開始旅程頁)、`06-dashboard.md`(旅程主頁)、`07-chat.md`(AI 對話頁)。
+- `05-journey-start.md`(開始旅程頁)、`06-dashboard.md`(旅程主頁)、`07-chat.md`(AI 對話頁):原始規格，不要修改。
+- `05-journey-start-v2.md`、`06-dashboard-v2.md`:依實作補上錯誤回應、驗證規則等的新版規格，給前端使用。
 - Lambda 分組:`trip-management`(`/v1/trip*`)、`push-subscription`、`chat-send`(`POST /v1/chat/messages`)、`conversation-management`(其餘 `/v1/conversations*`)。每支 Lambda 內用 `(httpMethod, resource)` 分派路由。
 - `legacy/`:舊版程式(Policies / Flights / Weather 假資料版),已不使用,僅供參考。
 
