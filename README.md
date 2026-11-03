@@ -1,6 +1,6 @@
 # 旅遊理賠助手(Travel Claim Assistant)
 
-個人 side project:旅客登入後輸入航班,系統監控航班狀態;航班延誤達保單理賠門檻時通知使用者,並提供理賠準備清單與 AI 對話協助。
+旅客登入後輸入航班,系統監控航班狀態;航班延誤達保單理賠門檻時通知使用者,並提供理賠準備清單與 AI 對話協助。
 
 後端以 AWS Serverless 建置(API Gateway + Lambda + DynamoDB),目前以 console / AWS CLI 手動部署。
 
