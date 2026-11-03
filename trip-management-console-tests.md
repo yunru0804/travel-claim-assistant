@@ -43,6 +43,8 @@
 | ⑧-2 | `get-user-004` | GET | 404 `policy_not_found` | 否 |
 | ⑨-1 | `put-user-001` | PUT | 200 `{}` | **是**(整筆覆蓋) |
 | ⑨-2 | `get-user-001` | GET | 200,航班變成 CI100 | 否 |
+| ⑩-1 | `put-user-001-unknown-flight` | PUT | 200 `{}` | **是**(整筆覆蓋) |
+| ⑩-2 | `get-user-001` | GET | 502 `flight_unavailable` | 否 |
 
 ---
 
@@ -211,7 +213,30 @@ Event name:`post-user-002-past-date`
 
 預期:`flight.flightNumber` 變成 CI100、`arrivalTime` 19:30(CI100 有預計抵達時間),`tripStatus.state` 仍是 `NORMAL`(Trips 沒有監控狀態)。
 
-> PUT 的航班必須在 Flights 表裡,否則之後 GET 會回 502 `flight_unavailable`。目前 Flights 只有 BR192、CI100 的 2026-11-20。
+> PUT 的航班必須在 Flights 表裡,否則之後 GET 會回 502 `flight_unavailable`(見 ⑩)。目前 Flights 只有 BR192、CI100 的 2026-11-20。
+
+## ⑩ PUT 不存在的航班
+
+建立或修改旅程時不檢查航班是否存在,所以 PUT 會成功;要等到 GET 查 Flights 表時才回錯誤。
+
+**⑩-1** Event name:`put-user-001-unknown-flight`
+
+```json
+{
+  "httpMethod": "PUT",
+  "resource": "/v1/trip/flight",
+  "requestContext": {"authorizer": {"claims": {"sub": "user-001"}}},
+  "body": "{\"flightNumber\":\"BR999\",\"departureDate\":\"2026-11-20\"}"
+}
+```
+
+預期:`statusCode` 200,`body` 為 `"{}"`(BR999 格式正確,但 Flights 表沒有這班)
+
+**⑩-2** 再跑一次 ① `get-user-001`
+
+預期:`statusCode` 502,`error` `flight_unavailable`,`message` 查無航班資訊,請修改航班
+
+> ⑩ 會讓 user-001 的旅程變成 BR999,① 之後都會回 502。測完請重跑 seed 還原(見「測完還原」)。
 
 ---
 
@@ -230,5 +255,5 @@ Event name:`post-user-002-past-date`
 
 ## 測完還原
 
-1. CloudShell 再跑一次 `python3 seed_dynamodb.py`:user-001、user-003 恢復原始資料(還原 ④、⑨ 的修改)。
+1. CloudShell 再跑一次 `python3 seed_dynamodb.py`:user-001、user-003 恢復原始資料(還原 ④、⑨、⑩ 的修改)。
 2. 手動刪除 ⑧ 建立的 user-004:**DynamoDB** → **Tables** → `Trips` → **Explore table items** → 勾選 `user-004` → **Actions** → **Delete items**。
