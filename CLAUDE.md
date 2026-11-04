@@ -35,10 +35,12 @@
 - 錯誤回應格式:`{"error": "<code>", "message": "<中文訊息>"}`。400 invalid_request / departure_date_in_past、401 unauthorized、404 trip_not_found / policy_not_found / route_not_found、409 trip_already_exists / claim_not_eligible / checklist_mismatch、502 trip_unavailable / policy_unavailable / flight_unavailable、500 internal_error。
 - 測試帳號(seed):user-001 正常旅程、user-002 無旅程、user-003 異常且已立案。
 
-## 已部署(2026-11-01,舊版,尚未換成新版)
-- 已用 CloudShell 跑 `seed_dynamodb.py` 建好三張表與假資料。
-- Lambda `trip-management`(Python 3.x,console 手動建立,程式貼在 `lambda_function.py`):已設環境變數與 inline policy `trip-management-dynamodb`,`user-001`(200)與 `user-002`(404)測試通過。
-- 預設 128 MB / 3 秒冷啟動會逾時,已調成 Memory 512 MB、Timeout 10 秒。
+## 部署環境
+- **AWS region:`us-east-1`**(維吉尼亞北部)。所有資源(DynamoDB、Lambda、API Gateway、Cognito…)都建在這個 region;IAM 是全域。
+- 2026-11-04 發現先前建錯 region(`ap-southeast-1` 新加坡),已於 `us-east-1` 重建,新加坡的 Lambda、DynamoDB 表、日誌與舊 IAM role 已刪除。
+- Lambda `trip-management`:Python 3.12,console 手動建立,程式貼在 `lambda_function.py`。Memory 512 MB、Timeout 10 秒(預設 128 MB / 3 秒冷啟動會逾時)。
+- Execution role:`trip-management-role-aasao2te`,inline policy `trip-management-dynamodb`(ARN 需指定 `us-east-1`)。
+- 手動測試步驟見 `trip-management-console-tests.md`。
 
 ## 下一步
 1. API Gateway(REST)+ Cognito Authorizer 接到 `trip-management`。

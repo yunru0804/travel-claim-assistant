@@ -112,6 +112,8 @@ python -m unittest test_trip_management -v
 
 ## 部署 trip-management
 
+所有資源都建在 **`us-east-1`**(維吉尼亞北部),操作前請確認 console 右上角的 region。
+
 以 console 手動部署,詳細步驟與測試 event 見 [trip-management-console-tests.md](trip-management-console-tests.md)。
 
 1. **建表與假資料**:在 CloudShell 上傳並執行 `python3 seed_dynamodb.py`。
