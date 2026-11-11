@@ -94,22 +94,28 @@ FLIGHTS = [
     },
 ]
 
-# 天氣:只放日本城市,從執行當天 00:00(UTC)起往後 WEATHER_DAYS 天,每 3 小時一筆。
+# 天氣:只放日本城市,從執行當天 00:00(UTC)起到 WEATHER_END_DATE,每 3 小時一筆。
 # 以執行當天為起點,之後重跑 seed 資料仍會涵蓋「現在」。
-# 城市 -> (白天最高溫, 早晚溫差, 各天的降雨機率);同樣的輸入每次產生同樣的資料。
+# 城市 -> (各月白天最高溫, 早晚溫差, 降雨機率循環);同一天每次產生同樣的資料。
+# 月均高溫只列 11〜2 月,WEATHER_END_DATE 往後延時要補上對應月份。
 WEATHER_CITIES = {
-    "東京": (20, 7, [10, 10, 30, 60, 80, 40, 10, 0, 20, 50, 30]),
-    "大阪": (21, 7, [20, 70, 90, 50, 20, 10, 0, 10, 40, 60, 20]),
-    "福岡": (21, 6, [40, 30, 10, 0, 10, 30, 60, 90, 70, 30, 10]),
-    "沖繩": (27, 4, [30, 50, 80, 90, 60, 30, 20, 10, 20, 40, 60]),
+    "東京": ({11: 17, 12: 12, 1: 10, 2: 11}, 9, [10, 10, 30, 60, 80, 40, 10, 0, 20, 50, 30, 10, 70]),
+    "大阪": ({11: 17, 12: 12, 1: 9, 2: 10}, 8, [20, 70, 90, 50, 20, 10, 0, 10, 40, 60, 20, 30]),
+    "福岡": ({11: 18, 12: 13, 1: 10, 2: 11}, 7, [40, 30, 10, 0, 10, 30, 60, 90, 70, 30, 10]),
+    "沖繩": ({11: 24, 12: 21, 1: 19, 2: 19}, 4, [30, 50, 80, 90, 60, 30, 20, 10, 20, 40, 60, 50, 30, 10]),
 }
-WEATHER_DAYS = 11
-WEATHER_INTERVAL_HOURS = 3
 JAPAN_UTC_OFFSET_HOURS = 9
+JAPAN = timezone(timedelta(hours=JAPAN_UTC_OFFSET_HOURS))
+WEATHER_END_DATE = datetime(2027, 3, 1, tzinfo=JAPAN)  # 不含,即資料到日本時間 2027-02-28 21:00
+WEATHER_PATTERN_START = datetime(2026, 11, 1, tzinfo=timezone.utc)  # 降雨循環的起算日,固定才能每次相同
+WEATHER_INTERVAL_HOURS = 3
+SNOW_MAX_TEMPERATURE = 2  # 會下雨且氣溫在此以下時改為下雪
 
 
-def condition_for(rain_probability):
-    """依降雨機率決定天氣代碼(對應 trip_management.WEATHER_CODES)。"""
+def condition_for(rain_probability, temperature):
+    """依降雨機率與氣溫決定天氣代碼(對應 trip_management.WEATHER_CODES)。"""
+    if rain_probability >= 60 and temperature <= SNOW_MAX_TEMPERATURE:
+        return "SNOW"
     if rain_probability >= 85:
         return "THUNDERSTORM"
     if rain_probability >= 60:
@@ -125,19 +131,20 @@ def build_weather(now):
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     updated_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     items = []
-    for city, (high, swing, daily_rain) in WEATHER_CITIES.items():
-        for step in range(WEATHER_DAYS * 24 // WEATHER_INTERVAL_HOURS):
+    steps = int((WEATHER_END_DATE - start).total_seconds() // 3600 // WEATHER_INTERVAL_HOURS)
+    for city, (monthly_high, swing, rain_cycle) in WEATHER_CITIES.items():
+        for step in range(max(steps, 0)):
             moment = start + timedelta(hours=step * WEATHER_INTERVAL_HOURS)
-            local_hour = (moment.hour + JAPAN_UTC_OFFSET_HOURS) % 24
+            local = moment + timedelta(hours=JAPAN_UTC_OFFSET_HOURS)
             # 當地 14 點最熱、2 點最冷(跨午夜計算與 14 點相差幾小時,最多 12)
-            hours_from_peak = min(abs(local_hour - 14), 24 - abs(local_hour - 14))
-            temperature = high - swing * hours_from_peak / 12
-            rain = daily_rain[(moment - start).days]
+            hours_from_peak = min(abs(local.hour - 14), 24 - abs(local.hour - 14))
+            temperature = round(monthly_high[local.month] - swing * hours_from_peak / 12, 1)
+            rain = rain_cycle[(local.date() - WEATHER_PATTERN_START.date()).days % len(rain_cycle)]
             items.append({
                 "city": city,
                 "forecast_time": moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "condition_code": condition_for(rain),
-                "temperature_c": round(temperature, 1),
+                "condition_code": condition_for(rain, temperature),
+                "temperature_c": temperature,
                 "rain_probability_percent": rain,
                 "updated_at": updated_at,  # 這批資料寫入的時間(之後由天氣排程寫入)
             })

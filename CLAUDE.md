@@ -24,7 +24,7 @@
   - Trips:PK `sub`,屬性 flight_number / departure_date / created_at / updated_at,以及事件驅動流程寫入的 trip_status / disruption / delay_claim。讀取用 ConsistentRead(POST 後立即 GET)。
   - Policies:PK `sub`,屬性 `policies`(policy_number / policyholder_name / product_name / coverage_start / coverage_end / coverages)
   - Flights:PK `flight_no`,SK `departure_date`,屬性 origin_airport / destination_airport / scheduled_departure / scheduled_arrival / estimated_arrival / terminal_gate_text / baggage_carousel_text
-  - Weather:PK `city`(中文城市名)、SK `forecast_time`(UTC ISO),屬性 condition_code / temperature_c / rain_probability_percent / updated_at。每 3 小時一筆，讀取時 Query 現在往前 3 小時內最新一筆，沒有則 weather 回 null。seed 只放日本 4 城市(東京、大阪、福岡、沖繩),從執行當天起 11 天。
+  - Weather:PK `city`(中文城市名)、SK `forecast_time`(UTC ISO),屬性 condition_code / temperature_c / rain_probability_percent / updated_at。每 3 小時一筆，讀取時 Query 現在往前 3 小時內最新一筆，沒有則 weather 回 null。seed 只放日本 4 城市(東京、大阪、福岡、沖繩),從執行當天起到日本時間 2027-02-28,溫度依月份變化，冬季低溫雨天為 SNOW。
   - ExchangeRates:PK `currency`,屬性 rate_per_twd
 - 機場(城市、國家、固定 UTC 時差)、國家→幣別、航空公司電話、support 連結寫在程式常數。不用 zoneinfo(Lambda 不一定有時區資料),只放無日光節約的地區。
 - 一位使用者只存一筆旅程，不保留歷史。PUT 整筆覆蓋(含監控狀態、理賠資料),等同換成新旅程。POST 遇到已有旅程回 409,由前端詢問是否覆蓋，確認後改呼叫 PUT;PUT 沒有旅程回 404,前端改呼叫 POST。
