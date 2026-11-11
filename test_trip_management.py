@@ -224,6 +224,11 @@ class FakeByKey(FakeTable):
         return self._get(key)
 
 
+class FakeWeather(FakeTable):
+    def get(self, city, now):
+        return self._get((city, now))
+
+
 POLICY = {
     "policy_number": "TA-20261103-01",
     "policyholder_name": "王小明",
@@ -266,8 +271,8 @@ def make_full_deps(trip=TRIP, **overrides):
         "trips": FakeTrips({"sub-1": trip} if trip else {}),
         "policies": FakePolicies({"sub-1": [OTHER_POLICY, POLICY]}),
         "flights": FakeFlights({("BR192", "2026-11-03"): FLIGHT}),
-        "weather": FakeByKey({"東京": {"city": "東京", "condition_code": "PARTLY_CLOUDY",
-                                     "temperature_c": Decimal("22"), "rain_probability_percent": Decimal("10")}}),
+        "weather": FakeWeather({("東京", NOW): {"city": "東京", "condition_code": "PARTLY_CLOUDY",
+                                               "temperature_c": Decimal("22"), "rain_probability_percent": Decimal("10")}}),
         "rates": FakeByKey({"JPY": {"currency": "JPY", "rate_per_twd": Decimal("4.85")}}),
     }
     parts.update(overrides)
@@ -378,15 +383,21 @@ class GetTripTest(unittest.TestCase):
                 self.assertEqual((status, body["error"]), (502, code))
 
     def test_weather_and_rate_failures_return_null(self):
-        deps = make_full_deps(weather=FakeByKey(error=RuntimeError("down")), rates=FakeByKey(error=RuntimeError("down")))
+        deps = make_full_deps(weather=FakeWeather(error=RuntimeError("down")), rates=FakeByKey(error=RuntimeError("down")))
         status, body = get_trip(deps)
         self.assertEqual(status, 200)
         self.assertIsNone(body["data"]["weather"])
         self.assertIsNone(body["data"]["exchangeRate"])
 
     def test_unknown_weather_code_returns_null(self):
-        weather = FakeByKey({"東京": {"condition_code": "HAZE", "temperature_c": 1, "rain_probability_percent": 0}})
+        weather = FakeWeather({("東京", NOW): {"condition_code": "HAZE", "temperature_c": 1, "rain_probability_percent": 0}})
         self.assertIsNone(get_trip(make_full_deps(weather=weather))[1]["data"]["weather"])
+
+    def test_no_recent_weather_returns_null(self):
+        self.assertIsNone(get_trip(make_full_deps(weather=FakeWeather()))[1]["data"]["weather"])
+
+    def test_weather_time_range_is_last_three_hours(self):
+        self.assertEqual(tm.weather_time_range(NOW), ("2026-11-02T00:00:00Z", NOW_ISO))
 
     def test_domestic_trip_has_no_exchange_rate(self):
         flight = dict(FLIGHT, destination_airport="KHH")

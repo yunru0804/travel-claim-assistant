@@ -65,7 +65,7 @@ Event name:`get-user-001`
 - `statusCode` 200
 - `displayName` 王小明、`tripStatus.state` `NORMAL`
 - `flight` 為 BR192、台北 TPE → 東京 NRT、`departureTime` 10:15、`arrivalTime` 14:30、`scheduledDurationMinutes` 195
-- `weather`、`exchangeRate` **不是 null**(PARTLY_CLOUDY 22 度、JPY 4.85)
+- `weather`、`exchangeRate` **不是 null**(天氣取現在往前 3 小時內最新一筆，數值隨時間變動;匯率 JPY 4.85)
 - `disruption` null、`delayClaim.eligible` false
 - `support.airlinePhone` `0800098666`
 
@@ -250,7 +250,7 @@ Event name:`post-user-002-past-date`
 | log 有 `ResourceNotFoundException` | 表不在這個 region,或環境變數的表名拼錯 |
 | `KeyError: 'TRIP_TABLE'` 之類 | 環境變數漏設 |
 | `Task timed out` | Timeout 沒改成 10 秒 |
-| `weather` 或 `exchangeRate` 是 null | Weather / ExchangeRates 的權限、環境變數或資料有問題(log 會有 `source=weather failed`) |
+| `weather` 或 `exchangeRate` 是 null | Weather / ExchangeRates 的權限(Weather 要 `Query`)、環境變數或資料有問題(log 會有 `source=weather failed`);若 log 沒錯誤，可能是天氣資料已過期，重跑 seed |
 | 500 `internal_error` | 程式錯誤,log 有完整 traceback |
 
 ## 測完還原

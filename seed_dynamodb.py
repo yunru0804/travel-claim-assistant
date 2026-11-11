@@ -2,13 +2,15 @@
 
 在 AWS CloudShell 執行:  python3 seed_dynamodb.py
 可重複執行:表已存在就跳過建立,資料用 put_item 覆蓋。
-Policies / Flights / Weather 沿用 legacy 版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
+Policies / Flights 沿用 legacy 版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
+Weather 主鍵改為 city + forecast_time:若既有 Weather 表是舊主鍵,須先在 console 刪表再執行。
 
 測試帳號:
   user-001:正常狀態旅程(BR192)
   user-002:沒有旅程,GET 回 {}
   user-003:異常狀態旅程(CI100 延誤 5 小時,已達理賠門檻並立案)
 """
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal  # boto3 的 DynamoDB 不接受 float,數字要用 Decimal
 
 import boto3
@@ -20,7 +22,7 @@ TABLES = {
     "Trips": ("sub", None),
     "Policies": ("sub", None),
     "Flights": ("flight_no", "departure_date"),
-    "Weather": ("city", None),
+    "Weather": ("city", "forecast_time"),
     "ExchangeRates": ("currency", None),
 }
 
@@ -92,10 +94,57 @@ FLIGHTS = [
     },
 ]
 
-WEATHER = [
-    {"city": "東京", "condition_code": "PARTLY_CLOUDY", "temperature_c": 22, "rain_probability_percent": 10},
-    {"city": "大阪", "condition_code": "RAIN", "temperature_c": 18.5, "rain_probability_percent": 80},
-]
+# 天氣:只放日本城市,從執行當天 00:00(UTC)起往後 WEATHER_DAYS 天,每 3 小時一筆。
+# 以執行當天為起點,之後重跑 seed 資料仍會涵蓋「現在」。
+# 城市 -> (白天最高溫, 早晚溫差, 各天的降雨機率);同樣的輸入每次產生同樣的資料。
+WEATHER_CITIES = {
+    "東京": (20, 7, [10, 10, 30, 60, 80, 40, 10, 0, 20, 50, 30]),
+    "大阪": (21, 7, [20, 70, 90, 50, 20, 10, 0, 10, 40, 60, 20]),
+    "福岡": (21, 6, [40, 30, 10, 0, 10, 30, 60, 90, 70, 30, 10]),
+    "沖繩": (27, 4, [30, 50, 80, 90, 60, 30, 20, 10, 20, 40, 60]),
+}
+WEATHER_DAYS = 11
+WEATHER_INTERVAL_HOURS = 3
+JAPAN_UTC_OFFSET_HOURS = 9
+
+
+def condition_for(rain_probability):
+    """依降雨機率決定天氣代碼(對應 trip_management.WEATHER_CODES)。"""
+    if rain_probability >= 85:
+        return "THUNDERSTORM"
+    if rain_probability >= 60:
+        return "RAIN"
+    if rain_probability >= 40:
+        return "CLOUDY"
+    if rain_probability >= 20:
+        return "PARTLY_CLOUDY"
+    return "SUNNY"
+
+
+def build_weather(now):
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    updated_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    items = []
+    for city, (high, swing, daily_rain) in WEATHER_CITIES.items():
+        for step in range(WEATHER_DAYS * 24 // WEATHER_INTERVAL_HOURS):
+            moment = start + timedelta(hours=step * WEATHER_INTERVAL_HOURS)
+            local_hour = (moment.hour + JAPAN_UTC_OFFSET_HOURS) % 24
+            # 當地 14 點最熱、2 點最冷(跨午夜計算與 14 點相差幾小時,最多 12)
+            hours_from_peak = min(abs(local_hour - 14), 24 - abs(local_hour - 14))
+            temperature = high - swing * hours_from_peak / 12
+            rain = daily_rain[(moment - start).days]
+            items.append({
+                "city": city,
+                "forecast_time": moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "condition_code": condition_for(rain),
+                "temperature_c": round(temperature, 1),
+                "rain_probability_percent": rain,
+                "updated_at": updated_at,  # 這批資料寫入的時間(之後由天氣排程寫入)
+            })
+    return items
+
+
+WEATHER = build_weather(datetime.now(timezone.utc))
 
 EXCHANGE_RATES = [
     {"currency": "JPY", "rate_per_twd": 4.85},
@@ -127,6 +176,10 @@ def to_decimal(value):
 def create_table(name, pk, sk):
     existing = [t.name for t in dynamodb.tables.all()]
     if name in existing:
+        current = [k["AttributeName"] for k in dynamodb.Table(name).key_schema]
+        if current != [k for k in (pk, sk) if k]:
+            # DynamoDB 不能改既有表的主鍵,要先手動刪表再重跑
+            raise SystemExit(f"{name}: 主鍵是 {current},新版要 {[pk, sk]},請先在 console 刪除 {name} 表再重跑")
         print(f"{name}: 已存在,跳過建立")
         return
     key_schema = [{"AttributeName": pk, "KeyType": "HASH"}]
@@ -149,9 +202,9 @@ def main():
     for name, (pk, sk) in TABLES.items():
         create_table(name, pk, sk)
     for name, items in DATA.items():
-        table = dynamodb.Table(name)
-        for item in items:
-            table.put_item(Item=to_decimal(item))
+        with dynamodb.Table(name).batch_writer() as batch:  # 每 25 筆一批寫入,天氣資料較多
+            for item in items:
+                batch.put_item(Item=to_decimal(item))
         print(f"{name}: 寫入 {len(items)} 筆")
 
 

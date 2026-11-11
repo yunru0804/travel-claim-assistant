@@ -13,11 +13,12 @@ DynamoDB 資料表:
                                                   trip_status, disruption, delay_claim(由事件驅動流程寫入)
   Policies      : PK sub                          policies(保單清單,含要保人姓名、保障期間、保障項目)
   Flights       : PK flight_no, SK departure_date 起訖機場、表定/預計時間、航廈登機門、行李轉盤
-  Weather       : PK city                         condition_code, temperature_c, rain_probability_percent
+  Weather       : PK city, SK forecast_time       condition_code, temperature_c, rain_probability_percent, updated_at
+                                                  (每 3 小時一筆,取現在往前 3 小時內最新的一筆)
   ExchangeRates : PK currency                     rate_per_twd(1 TWD 可換多少該幣別)
 
 環境變數:TRIP_TABLE、POLICY_TABLE、FLIGHT_TABLE、WEATHER_TABLE、EXCHANGE_RATE_TABLE
-IAM:Trips 需要 GetItem、PutItem、UpdateItem;其他四張表需要 GetItem
+IAM:Trips 需要 GetItem、PutItem、UpdateItem;Weather 需要 Query;其他三張表需要 GetItem
 
 一位使用者只存一筆旅程。PUT 會整筆覆蓋(含監控狀態、理賠資料),等同換成新旅程。
 已有旅程時 POST 回 409,由前端詢問使用者是否覆蓋,確認後改呼叫 PUT。
@@ -57,6 +58,7 @@ DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 EARLIEST_UTC_OFFSET = timedelta(hours=-12)
 # 保單狀態以台灣日期判斷
 TAIPEI = timezone(timedelta(hours=8))
+WEATHER_INTERVAL = timedelta(hours=3)
 
 # 機場對照表:IATA -> (城市, 國家代碼, UTC 時差小時)。
 # 用固定時差而不是 zoneinfo,因為 Lambda Python 3.12 的執行環境不一定有時區資料庫;
@@ -286,12 +288,25 @@ class FlightStore:
             Key={"flight_no": flight_number, "departure_date": departure_date}).get("Item")
 
 
+def weather_time_range(now):
+    """天氣每 3 小時一筆;只採用現在往前 WEATHER_INTERVAL 內的資料,更舊的視為過期。"""
+    return _iso(now - WEATHER_INTERVAL), _iso(now)
+
+
 class WeatherStore:
     def __init__(self):
         self._table = _table("WEATHER_TABLE")
 
-    def get(self, city):
-        return self._table.get_item(Key={"city": city}).get("Item")
+    def get(self, city, now):
+        """取時間範圍內 forecast_time 最新的一筆;沒有回 None。"""
+        start, end = weather_time_range(now)
+        items = self._table.query(
+            KeyConditionExpression="city = :city AND forecast_time BETWEEN :start AND :end",
+            ExpressionAttributeValues={":city": city, ":start": start, ":end": end},
+            ScanIndexForward=False,  # 由新到舊
+            Limit=1,
+        ).get("Items", [])
+        return items[0] if items else None
 
 
 class ExchangeRateStore:
@@ -516,7 +531,7 @@ def get_trip(event, deps):
 
         # 第二階段:依目的地查天氣與匯率
         currency = CURRENCIES.get(flight["destination"]["countryCode"])
-        weather_future = pool.submit(deps.weather.get, flight["destination"]["city"])
+        weather_future = pool.submit(deps.weather.get, flight["destination"]["city"], now)
         rate_future = pool.submit(deps.rates.get, currency) if currency else None
         weather = build_weather(_optional("weather", weather_future))
         exchange_rate = build_exchange_rate(currency, _optional("exchange_rate", rate_future)) if rate_future else None

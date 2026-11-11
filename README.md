@@ -80,7 +80,7 @@ API Gateway(REST,Cognito Authorizer)
 ```
 .
 ├── trip_management.py                Lambda trip-management(05、06 的 4 支 API)
-├── test_trip_management.py           單元測試(43 個,不連 AWS)
+├── test_trip_management.py           單元測試(45 個,不連 AWS)
 ├── seed_dynamodb.py                  建立 DynamoDB 表並寫入假資料(在 CloudShell 執行)
 ├── trip-management-console-tests.md  Lambda console 手動測試腳本
 ├── 05/06/07-*.md                     API 規格(見上方)
@@ -95,7 +95,7 @@ API Gateway(REST,Cognito Authorizer)
 | `Trips` | PK `sub` | 每位使用者一筆目前旅程,含航班與監控狀態、理賠資料 |
 | `Policies` | PK `sub` | 保單清單(要保人、保障期間、保障項目) |
 | `Flights` | PK `flight_no`、SK `departure_date` | 航班資料(起訖機場、表定/預計時間、登機門) |
-| `Weather` | PK `city` | 目的地天氣 |
+| `Weather` | PK `city`、SK `forecast_time` | 目的地天氣,每 3 小時一筆(假資料只有日本 4 個城市) |
 | `ExchangeRates` | PK `currency` | 匯率(1 TWD 可換多少外幣) |
 
 全部使用 On-demand(`PAY_PER_REQUEST`)計費。
@@ -129,7 +129,7 @@ python -m unittest test_trip_management -v
    | `WEATHER_TABLE` | `Weather` |
    | `EXCHANGE_RATE_TABLE` | `ExchangeRates` |
 
-5. **IAM**:execution role 加上 inline policy。Trips 需要 `GetItem`、`PutItem`、`UpdateItem`;Policies、Flights、Weather、ExchangeRates 需要 `GetItem`。
+5. **IAM**:execution role 加上 inline policy。Trips 需要 `GetItem`、`PutItem`、`UpdateItem`;Weather 需要 `Query`;Policies、Flights、ExchangeRates 需要 `GetItem`。
 6. **測試**:依測試腳本 ①〜⑩ 執行。
 
 ### 測試帳號(seed 假資料)
