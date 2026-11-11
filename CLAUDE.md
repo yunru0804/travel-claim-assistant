@@ -35,6 +35,15 @@
 - 錯誤回應格式:`{"error": "<code>", "message": "<中文訊息>"}`。400 invalid_request / departure_date_in_past、401 unauthorized、404 trip_not_found / policy_not_found / route_not_found、409 trip_already_exists / claim_not_eligible / checklist_mismatch、502 trip_unavailable / policy_unavailable / flight_unavailable、500 internal_error。
 - 測試帳號(seed):user-001 正常旅程、user-002 無旅程、user-003 異常且已立案。
 
+## Tool Lambda「get-custom-info」(AgentCore Gateway 用，依 `agent-tool-interface-contract-v1.md`)
+- 檔案:`get_custom_info.py`(import `trip_management` 重用資料表元件與組裝函式，部署時兩個檔案一起放)、`test_get_custom_info.py`(23 個)。
+- 執行全部測試:`python -m unittest test_trip_management test_get_custom_info`
+- 輸入 `{"sections": [...]}`(flight / flight_status / weather / policy_summary),回傳合約 envelope(schemaVersion / status / source / data / error),data 只放要求的類別。
+- 身分：尚未定案，目前只讀環境變數 `MOCK_SUB`;沒設定回 UNAUTHORIZED,不 fallback、不從 event 取。定案後只改 `resolve_sub`。
+- 自行決定(合約未定):天氣失敗或無近 3 小時資料 → weather null;無涵蓋出發日的保單 → policySummary null;Flights 查無或資料不完整 → NOT_FOUND;DynamoDB 失敗 → SERVICE_UNAVAILABLE(retryable);非預期例外直接丟出。
+- 只讀 IAM:Trips / Policies / Flights GetItem,Weather Query。部署與測試見 `get-custom-info-console-tests.md`。
+- 給團隊的回覆:`agent-tool-interface-contract-v1-trip-reply.md`。旅程管理端已確認(2026-11-11):Tool 直接讀 DB 並共用 `trip_management.py`,不透過 HTTP 呼叫旅程管理 API;不需要 partial_success,天氣查不到回 null、整體仍為 success。
+
 ## 部署環境
 - **AWS region:`us-east-1`**(維吉尼亞北部)。所有資源(DynamoDB、Lambda、API Gateway、Cognito…)都建在這個 region;IAM 是全域。
 - 2026-11-04 發現先前建錯 region(`ap-southeast-1` 新加坡),已於 `us-east-1` 重建,新加坡的 Lambda、DynamoDB 表、日誌與舊 IAM role 已刪除。

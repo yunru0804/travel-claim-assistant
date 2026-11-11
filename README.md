@@ -83,6 +83,9 @@ API Gateway(REST,Cognito Authorizer)
 ├── test_trip_management.py           單元測試(45 個,不連 AWS)
 ├── seed_dynamodb.py                  建立 DynamoDB 表並寫入假資料(在 CloudShell 執行)
 ├── trip-management-console-tests.md  Lambda console 手動測試腳本
+├── get_custom_info.py                AgentCore Tool Lambda get-custom-info(Mock 身分)
+├── test_get_custom_info.py           get-custom-info 單元測試(23 個)
+├── get-custom-info-console-tests.md  get-custom-info 部署與 console 測試
 ├── 05/06/07-*.md                     API 規格(見上方)
 ├── legacy/                           舊版程式,已不使用,僅供參考
 └── CLAUDE.md                         給 Claude Code 的專案說明
@@ -105,7 +108,7 @@ API Gateway(REST,Cognito Authorizer)
 需要 Python 3.12。單元測試使用假的資料表物件,不需要 AWS 帳號,也不需要安裝 boto3。
 
 ```bash
-python -m unittest test_trip_management -v
+python -m unittest test_trip_management test_get_custom_info -v
 ```
 
 修改程式後請先跑單元測試。
