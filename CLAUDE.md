@@ -10,17 +10,16 @@
 - 事件驅動(與 Bedrock 無關):EventBridge Scheduler → CheckFlight → EventBridge Bus → ClaimEligible → EventBridge Bus → Notification → SNS。航班監控狀態存 DynamoDB。
 
 ## API 規格
-- `05-journey-start.md`(開始旅程頁)、`06-dashboard.md`(旅程主頁)、`07-chat.md`(AI 對話頁):原始規格，不要修改。
-- `05-journey-start-v2.md`、`06-dashboard-v2.md`:依實作補上錯誤回應、驗證規則等的新版規格，給前端使用。
+- `05-journey-start-v2.md`(開始旅程頁)、`06-dashboard-v2.md`(旅程主頁):依實作補上錯誤回應、驗證規則等的規格，給前端使用。05、06 原始規格已移除(2026-11-20),需要時從 git 歷史取回。
+- `07-chat.md`(AI 對話頁):原始規格，尚未實作，不要修改。
 - Lambda 分組:`trip-management`(`/v1/trip*`)、`push-subscription`、`chat-send`(`POST /v1/chat/messages`)、`conversation-management`(其餘 `/v1/conversations*`)。每支 Lambda 內用 `(httpMethod, resource)` 分派路由。
-- `legacy/`:舊版程式(Policies / Flights / Weather 假資料版),已不使用,僅供參考。
 
 ## 目前進度:Lambda「旅程管理」(新版,依 05、06 規格)
 - 檔案:`trip_management.py`(Lambda)、`test_trip_management.py`(45 個單元測試)、`seed_dynamodb.py`(建表+假資料)。
 - 執行測試:`python -m unittest test_trip_management -v`
 - 已完成:`POST /v1/trip`、`PUT /v1/trip/flight`、`GET /v1/trip`、`PATCH /v1/trip/claim/checklist`。尚未完成：推播訂閱(`push-subscription` Lambda)、Web Push 發送。
 - 使用者身分只從 API Gateway 驗證後的 `requestContext.authorizer.claims.sub` 取得,不接受 body / query 帶入的 ID。
-- DynamoDB 資料表(Policies / Flights 沿用 legacy 表名與主鍵，屬性改新版):
+- DynamoDB 資料表(Policies / Flights 沿用舊版表名與主鍵，屬性改新版):
   - Trips:PK `sub`,屬性 flight_number / departure_date / created_at / updated_at,以及事件驅動流程寫入的 trip_status / disruption / delay_claim。讀取用 ConsistentRead(POST 後立即 GET)。
   - Policies:PK `sub`,屬性 `policies`(policy_number / policyholder_name / product_name / coverage_start / coverage_end / coverages)
   - Flights:PK `flight_no`,SK `departure_date`,屬性 origin_airport / destination_airport / scheduled_departure / scheduled_arrival / estimated_arrival / terminal_gate_text / baggage_carousel_text
@@ -36,9 +35,9 @@
 - 測試帳號(seed):user-001 正常旅程、user-002 無旅程、user-003 異常且已立案。
 
 ## Tool Lambda「get-custom-info」(AgentCore Gateway 用，依 `agent-tool-interface-contract-v1.md`)
-- 檔案:`get_custom_info.py`(import `trip_management` 重用資料表元件與組裝函式，部署時兩個檔案一起放)、`test_get_custom_info.py`(23 個)。
+- 檔案:`get_custom_info.py`(import `trip_management` 重用資料表元件與組裝函式，部署時兩個檔案一起放)、`test_get_custom_info.py`(29 個)。
 - 執行全部測試:`python -m unittest test_trip_management test_get_custom_info`
-- 輸入 `{"sections": [...]}`(flight / flight_status / weather / policy_summary),回傳合約 envelope(schemaVersion / status / source / data / error),data 只放要求的類別。
+- 輸入 `{"sections": [...]}`(flight / flight_status / weather / policy_summary),選填 `weatherCity`(enum:東京 / 大阪 / 福岡 / 沖繩,`WEATHER_CITIES`)查目的地以外的天氣;只要 weather + weatherCity 時不需要旅程。回傳合約 envelope(schemaVersion / status / source / data / error),data 只放要求的類別。
 - 身分：尚未定案，目前只讀環境變數 `MOCK_SUB`;沒設定回 UNAUTHORIZED,不 fallback、不從 event 取。定案後只改 `resolve_sub`。
 - 自行決定(合約未定):天氣失敗或無近 3 小時資料 → weather null;無涵蓋出發日的保單 → policySummary null;Flights 查無或資料不完整 → NOT_FOUND;DynamoDB 失敗 → SERVICE_UNAVAILABLE(retryable);非預期例外直接丟出。
 - 只讀 IAM:Trips / Policies / Flights GetItem,Weather Query。部署與測試見 `get-custom-info-console-tests.md`。

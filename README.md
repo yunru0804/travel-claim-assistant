@@ -67,7 +67,7 @@ API Gateway(REST,Cognito Authorizer)
 |---|---|
 | `05-journey-start-v2.md` | 開始旅程頁 **新版規格**(含錯誤回應、驗證規則、覆蓋流程),**前端請以此為準** |
 | `06-dashboard-v2.md` | 旅程主頁 **新版規格**(含錯誤回應、欄位計算規則、checklist 限制),**前端請以此為準** |
-| `05-journey-start.md`、`06-dashboard.md`、`07-chat.md` | 原始規格,保留不修改 |
+| `07-chat.md` | AI 對話頁原始規格(尚未實作) |
 
 錯誤回應統一格式:
 
@@ -84,10 +84,9 @@ API Gateway(REST,Cognito Authorizer)
 ├── seed_dynamodb.py                  建立 DynamoDB 表並寫入假資料(在 CloudShell 執行)
 ├── trip-management-console-tests.md  Lambda console 手動測試腳本
 ├── get_custom_info.py                AgentCore Tool Lambda get-custom-info(Mock 身分)
-├── test_get_custom_info.py           get-custom-info 單元測試(23 個)
+├── test_get_custom_info.py           get-custom-info 單元測試(29 個)
 ├── get-custom-info-console-tests.md  get-custom-info 部署與 console 測試
-├── 05/06/07-*.md                     API 規格(見上方)
-├── legacy/                           舊版程式,已不使用,僅供參考
+├── 05/06-*-v2.md、07-chat.md          API 規格(見上方)
 └── CLAUDE.md                         給 Claude Code 的專案說明
 ```
 

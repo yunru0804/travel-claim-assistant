@@ -5,6 +5,8 @@
 
 輸入:Gateway 傳入的 event 就是 Tool input,例如 {"sections": ["flight", "flight_status"]}
      (Gateway 實際的 event 格式需在整合時確認,log 會記下 event 的 key 方便比對)
+     weatherCity(選填,限 WEATHER_CITIES):查指定城市的天氣;沒填則查旅程目的地。
+     只要求 weather 且有填 weatherCity 時,不需要旅程與航班資料。
 輸出:合約第 5 節的 envelope:schemaVersion / status / source / data / error
      data 只放這次 sections 要求的資料:flight / flightStatus / weather / policySummary
 
@@ -13,7 +15,7 @@
 
 錯誤:
   UNAUTHORIZED         沒有可信的使用者身分
-  INVALID_ARGUMENT     sections 缺少、重複或不在允許清單
+  INVALID_ARGUMENT     sections 缺少、重複或不在允許清單;weatherCity 不在清單或沒有要求 weather
   NO_ACTIVE_TRIP       使用者沒有目前旅程
   NOT_FOUND            需要航班資料(flight / weather),但 Flights 表查無這班或資料不完整
   SERVICE_UNAVAILABLE  DynamoDB 查詢失敗(retryable)
@@ -36,10 +38,11 @@ SCHEMA_VERSION = "1.0"
 SOURCE_SYSTEM = "trip_management"
 IS_MOCK = True  # 資料表目前都是 seed 假資料;接上真實資料後改為 False
 SECTIONS = ("flight", "flight_status", "weather", "policy_summary")
+WEATHER_CITIES = ("東京", "大阪", "福岡", "沖繩")  # 與 Weather 表的資料一致;新增城市時 Gateway schema 的 enum 也要更新
 
 ERROR_MESSAGES = {
     "UNAUTHORIZED": "無法確認使用者身分",
-    "INVALID_ARGUMENT": "sections 參數不正確",
+    "INVALID_ARGUMENT": "sections 或 weatherCity 參數不正確",
     "NO_ACTIVE_TRIP": "目前沒有可查詢的旅程",
     "NOT_FOUND": "查無航班資料",
     "SERVICE_UNAVAILABLE": "資料服務暫時無法使用,請稍後再試",
@@ -58,14 +61,18 @@ def resolve_sub(event, context, env=os.environ):
     return env.get("MOCK_SUB") or None
 
 
-def parse_sections(event):
-    if not isinstance(event, dict) or set(event) != {"sections"}:
+def parse_input(event):
+    """回傳 (sections, weather_city);weather_city 沒填為 None。"""
+    if not isinstance(event, dict) or "sections" not in event or not set(event) <= {"sections", "weatherCity"}:
         raise ToolError("INVALID_ARGUMENT")
     sections = event["sections"]
     if (not isinstance(sections, list) or not sections
             or any(s not in SECTIONS for s in sections) or len(set(sections)) != len(sections)):
         raise ToolError("INVALID_ARGUMENT")
-    return set(sections)
+    weather_city = event.get("weatherCity")
+    if "weatherCity" in event and (weather_city not in WEATHER_CITIES or "weather" not in sections):
+        raise ToolError("INVALID_ARGUMENT")
+    return set(sections), weather_city
 
 
 def _call(source, func, *args):
@@ -116,23 +123,31 @@ def load_weather(deps, city, now):
     return {"city": city, **weather, "forecastTime": item["forecast_time"], "updatedAt": item.get("updated_at")}
 
 
-def collect(sections, deps, sub, now):
-    trip = _call("trip", deps.trips.get, sub)
-    if trip is None:
-        raise ToolError("NO_ACTIVE_TRIP")
+def load_flight(deps, trip):
+    item = _call("flight", deps.flights.get, trip["flight_number"], trip["departure_date"])
+    try:
+        return build_flight(trip, item)
+    except (KeyError, TypeError) as exc:  # 查無航班(item 為 None)或資料不完整
+        logger.error("flight data missing or incomplete: %s", type(exc).__name__)
+        raise ToolError("NOT_FOUND")
+
+
+def collect(sections, weather_city, deps, sub, now):
+    # 只查指定城市天氣時不需要旅程;沒指定城市時,天氣要靠航班資料才知道目的地
+    destination_weather = "weather" in sections and not weather_city
+    trip = None
+    if sections - {"weather"} or destination_weather:
+        trip = _call("trip", deps.trips.get, sub)
+        if trip is None:
+            raise ToolError("NO_ACTIVE_TRIP")
+    flight = load_flight(deps, trip) if "flight" in sections or destination_weather else None
     data = {}
 
-    if sections & {"flight", "weather"}:  # 天氣要靠航班資料才知道目的地
-        item = _call("flight", deps.flights.get, trip["flight_number"], trip["departure_date"])
-        try:
-            flight = build_flight(trip, item)
-        except (KeyError, TypeError) as exc:  # 查無航班(item 為 None)或資料不完整
-            logger.error("flight data missing or incomplete: %s", type(exc).__name__)
-            raise ToolError("NOT_FOUND")
-        if "flight" in sections:
-            data["flight"] = flight
-        if "weather" in sections:
-            data["weather"] = load_weather(deps, flight["destinationCity"], now)
+    if "flight" in sections:
+        data["flight"] = flight
+
+    if "weather" in sections:
+        data["weather"] = load_weather(deps, weather_city or flight["destinationCity"], now)
 
     if "flight_status" in sections:
         data["flightStatus"] = build_flight_status(trip)
@@ -161,7 +176,8 @@ def handle(event, deps, sub):
     try:
         if not sub:
             raise ToolError("UNAUTHORIZED")
-        data = collect(parse_sections(event), deps, sub, now)
+        sections, weather_city = parse_input(event)
+        data = collect(sections, weather_city, deps, sub, now)
     except ToolError as err:
         logger.info("tool error: %s", err.code)
         return envelope(now, code=err.code)

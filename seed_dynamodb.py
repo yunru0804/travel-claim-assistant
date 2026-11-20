@@ -2,7 +2,7 @@
 
 在 AWS CloudShell 執行:  python3 seed_dynamodb.py
 可重複執行:表已存在就跳過建立,資料用 put_item 覆蓋。
-Policies / Flights 沿用 legacy 版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
+Policies / Flights 沿用舊版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
 Weather 主鍵改為 city + forecast_time:若既有 Weather 表是舊主鍵,須先在 console 刪表再執行。
 
 測試帳號:

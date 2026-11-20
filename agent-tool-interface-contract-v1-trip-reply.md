@@ -15,9 +15,53 @@
 
 `get-clinic-info` 不在旅程管理範圍,本文件不涉及。
 
-## 2. 實際回傳格式
+## 2. 輸入與回傳格式
 
-輸入 schema 與合約 3.2 相同。以下為四個 sections 全部要求時的回傳(異常旅程測試帳號):
+### 2.1 Input schema(**比合約 3.2 多了選填的 `weatherCity`**)
+
+Gateway 註冊時請使用這份:
+
+```json
+{
+  "name": "get-custom-info",
+  "description": "查詢目前已授權旅客的旅程相關資訊,包括航班、航班異常狀態、天氣,以及資料服務可提供的保單摘要。天氣預設為旅程目的地;使用者詢問其他城市時填 weatherCity。僅在使用者需要相關資訊時呼叫,不用於正式理賠核定。",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "sections": {
+        "type": "array",
+        "description": "這次需要取得的資訊類別",
+        "items": {
+          "type": "string",
+          "enum": ["flight", "flight_status", "weather", "policy_summary"]
+        },
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "weatherCity": {
+        "type": "string",
+        "enum": ["東京", "大阪", "福岡", "沖繩"],
+        "description": "選填。使用者詢問旅程目的地以外的城市天氣時填寫,sections 須包含 weather。不填則回傳旅程目的地的天氣。不在清單內的城市目前不支援。"
+      }
+    },
+    "required": ["sections"],
+    "additionalProperties": false
+  }
+}
+```
+
+示例:「大阪天氣如何?」
+
+```json
+{"sections": ["weather"], "weatherCity": "大阪"}
+```
+
+- 只要求 `weather` 且有填 `weatherCity` 時,不需要旅程資料,沒有旅程的使用者也能查詢;仍需可信的使用者身分。
+- `weatherCity` 用固定選項,讓模型從 schema 就知道支援哪些城市,不會猜測或填入英文名稱。新增城市時需同步更新此 enum。
+
+### 2.2 回傳
+
+以下為四個 sections 全部要求、未填 `weatherCity` 時的回傳(異常旅程測試帳號):
 
 ```json
 {
@@ -87,21 +131,26 @@
 
 合約只寫「目的地天氣」。目前實作回傳**目的地現在的天氣**(現在往前 3 小時內最新一筆)。另一種解讀是「抵達時」或「出發日」的天氣預報,對尚未出發的旅客可能更有用。請確認要哪一種;若要預報,需另外定義欄位。
 
-### 4.2 使用者問的城市不是旅程目的地時
+### 4.2 使用者問的城市不是旅程目的地時(已由旅程管理端處理)
 
-驗收案例「東京天氣如何?」若旅客的目的地是大阪,Tool 會回傳大阪的天氣(`city: "大阪"`)。Tool input 沒有城市參數,所以無法查任意城市。
+驗收案例「東京天氣如何?」若旅客的目的地是大阪,原本的 schema 只能回傳大阪的天氣。旅程管理端已新增選填參數 `weatherCity`(見 2.1),模型應填入使用者問的城市。
 
-建議 Agent 端比對 `weather.city` 與使用者問的城市,不一致時明確說明「你的目的地是大阪」,不要把大阪的天氣當成東京的天氣回答。若需要查任意城市,需在 input schema 增加參數,並另外討論。
+請 Agent 端確認:
+
+- 使用者問的城市在 enum 內 → 填 `weatherCity`。
+- 不在 enum 內(例如首爾)→ 不呼叫天氣,直接說明目前不支援該城市,不可用其他城市的天氣代替。
+- 回傳的 `weather.city` 一律代表實際查詢的城市,回答時以此為準。
 
 ## 5. 合約未規定、旅程管理端自行決定的行為
 
 | 情境 | 行為 |
 |---|---|
 | 沒有可信身分 | `UNAUTHORIZED`,不改用預設帳號 |
-| event 有 `sections` 以外的 key(例如 `userId`) | `INVALID_ARGUMENT`。即使 Gateway schema 已設 `additionalProperties: false`,Lambda 仍再檢查一次 |
+| event 有 `sections`、`weatherCity` 以外的 key(例如 `userId`) | `INVALID_ARGUMENT`。即使 Gateway schema 已設 `additionalProperties: false`,Lambda 仍再檢查一次 |
 | `sections` 為空、重複或不在允許清單 | `INVALID_ARGUMENT` |
+| `weatherCity` 不在清單,或 `sections` 沒有 `weather` | `INVALID_ARGUMENT` |
 | 沒有目前旅程 | `NO_ACTIVE_TRIP` |
-| 要求 `flight` 或 `weather`,但查無航班資料 | `NOT_FOUND`(天氣需要航班資料才知道目的地) |
+| 要求 `flight`,或要求 `weather` 但沒填 `weatherCity`,且查無航班資料 | `NOT_FOUND`(天氣需要航班資料才知道目的地) |
 | 只要求 `flight_status` | 不查航班資料,所以航班資料有問題也能回傳狀態 |
 | DynamoDB 查詢失敗 | `SERVICE_UNAVAILABLE`,`retryable: true` |
 | 程式非預期錯誤 | 不轉成業務錯誤,直接由 Lambda 平台回報(依合約第 5 節,區分平台例外與業務錯誤) |
@@ -110,9 +159,9 @@
 
 ## 6. 需要 Agent／Gateway 端協助
 
-1. 將 `get-custom-info` 註冊為 Gateway Lambda Target,input schema 使用合約 3.2。
+1. 將 `get-custom-info` 註冊為 Gateway Lambda Target,input schema 使用本文件 2.1(含 `weatherCity`)。
 2. Gateway 的 IAM role 需要對此 Lambda 的 `lambda:InvokeFunction` 權限。
 3. 整合後執行一次呼叫,提供 Lambda log 中的 `tool=` 與 `event_keys=`,確認 event 格式(#7)。
-4. 決定身分傳遞方式(#6),以及第 4 節的兩個新問題。
+4. 決定身分傳遞方式(#6)與天氣時間點(4.1),並確認 4.2 的 Agent 行為。
 
 另外,合約文件目前沒有第 2 節(第 1 節之後直接是第 3 節),請確認是否漏掉內容。

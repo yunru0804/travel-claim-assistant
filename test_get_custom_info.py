@@ -9,6 +9,7 @@ from test_trip_management import (ABNORMAL_TRIP, FLIGHT, NOW, NOW_ISO, OTHER_POL
 WEATHER_ITEM = {"city": "東京", "forecast_time": "2026-11-02T03:00:00Z", "condition_code": "PARTLY_CLOUDY",
                 "temperature_c": Decimal("16.5"), "rain_probability_percent": Decimal("10"),
                 "updated_at": "2026-11-01T00:00:00Z"}
+OSAKA_WEATHER_ITEM = dict(WEATHER_ITEM, city="大阪", condition_code="RAIN", rain_probability_percent=Decimal("80"))
 
 
 def make_deps(trip=TRIP, **overrides):
@@ -16,14 +17,14 @@ def make_deps(trip=TRIP, **overrides):
         "trips": FakeTrips({"sub-1": trip} if trip else {}),
         "policies": FakePolicies({"sub-1": [OTHER_POLICY, POLICY]}),
         "flights": FakeFlights({("BR192", "2026-11-03"): FLIGHT}),
-        "weather": FakeWeather({("東京", NOW): WEATHER_ITEM}),
+        "weather": FakeWeather({("東京", NOW): WEATHER_ITEM, ("大阪", NOW): OSAKA_WEATHER_ITEM}),
     }
     parts.update(overrides)
     return tm.Deps(**parts, now=lambda: NOW)
 
 
-def call(sections, deps=None, sub="sub-1"):
-    return gci.handle({"sections": sections}, deps or make_deps(), sub)
+def call(sections, deps=None, sub="sub-1", **extra):
+    return gci.handle({"sections": sections, **extra}, deps or make_deps(), sub)
 
 
 class EnvelopeTest(unittest.TestCase):
@@ -86,6 +87,40 @@ class SectionsTest(unittest.TestCase):
     def test_all_sections(self):
         data = call(list(gci.SECTIONS))["data"]
         self.assertEqual(set(data), {"flight", "flightStatus", "weather", "policySummary"})
+
+
+class WeatherCityTest(unittest.TestCase):
+    def test_weather_for_other_city(self):
+        weather = call(["weather"], weatherCity="大阪")["data"]["weather"]
+        self.assertEqual((weather["city"], weather["conditionCode"]), ("大阪", "RAIN"))
+
+    def test_weather_city_without_trip_or_flight(self):
+        deps = make_deps(trip=None, flights=FakeFlights(error=RuntimeError("down")))
+        result = call(["weather"], deps, weatherCity="大阪")
+        self.assertEqual((result["status"], result["data"]["weather"]["city"]), ("success", "大阪"))
+
+    def test_weather_city_with_other_sections(self):
+        data = call(["flight", "weather"], weatherCity="大阪")["data"]
+        self.assertEqual((data["flight"]["destinationCity"], data["weather"]["city"]), ("東京", "大阪"))
+
+    def test_weather_city_with_trip_sections_still_needs_trip(self):
+        result = call(["weather", "flight_status"], make_deps(trip=None), weatherCity="大阪")
+        self.assertEqual(result["error"]["code"], "NO_ACTIVE_TRIP")
+
+    def test_weather_city_still_needs_identity(self):
+        self.assertEqual(call(["weather"], sub=None, weatherCity="大阪")["error"]["code"], "UNAUTHORIZED")
+
+    def test_invalid_weather_city(self):
+        cases = {
+            "unsupported city": (["weather"], "首爾"),
+            "english name": (["weather"], "Tokyo"),
+            "null": (["weather"], None),
+            "not string": (["weather"], ["大阪"]),
+            "weather not requested": (["flight"], "大阪"),
+        }
+        for name, (sections, city) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(call(sections, weatherCity=city)["error"]["code"], "INVALID_ARGUMENT")
 
 
 class NullableTest(unittest.TestCase):

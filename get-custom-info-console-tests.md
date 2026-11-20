@@ -92,7 +92,12 @@ Handler 維持 `lambda_function.lambda_handler`。
 | ⑧ | `flight-and-status` | 同 ① | 改成 `user-002` | `error`,`NO_ACTIVE_TRIP` |
 | ⑨ | `flight-and-status` | 同 ① | **刪除** `MOCK_SUB` | `error`,`UNAUTHORIZED` |
 
-⑦〜⑨ 要到 **Configuration** → **Environment variables** 改 `MOCK_SUB` 再按 Test。**測完改回 `user-003`**。
+| ⑩ | `weather-osaka` | `{"sections": ["weather"], "weatherCity": "大阪"}` | `user-003` | `success`;`weather.city` 大阪 |
+| ⑪ | `weather-osaka` | 同 ⑩ | 改成 `user-002` | `success`;沒有旅程也能查指定城市的天氣 |
+| ⑫ | `weather-unsupported-city` | `{"sections": ["weather"], "weatherCity": "首爾"}` | `user-003` | `error`,`INVALID_ARGUMENT` |
+| ⑬ | `weather-city-without-weather` | `{"sections": ["flight"], "weatherCity": "大阪"}` | `user-003` | `error`,`INVALID_ARGUMENT` |
+
+⑦〜⑨、⑪ 要到 **Configuration** → **Environment variables** 改 `MOCK_SUB` 再按 Test。**測完改回 `user-003`**。
 
 每次結果都應該有 5 個頂層欄位:`schemaVersion`、`status`、`source`、`data`、`error`,`source.isMock` 為 `true`。
 
