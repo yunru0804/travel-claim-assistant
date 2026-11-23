@@ -32,7 +32,7 @@
 - PATCH checklist:label 數量與順序須與後端一致，否則 409 checklist_mismatch;未達理賠門檻 409 claim_not_eligible。寫入用條件式只改 is_ready。
 - Lambda 環境變數:`TRIP_TABLE`、`POLICY_TABLE`、`FLIGHT_TABLE`、`WEATHER_TABLE`、`EXCHANGE_RATE_TABLE`。IAM:Trips 需 GetItem / PutItem / UpdateItem;Weather 需 Query;其他三張表需 GetItem。
 - 錯誤回應格式:`{"error": "<code>", "message": "<中文訊息>"}`。400 invalid_request / departure_date_in_past、401 unauthorized、404 trip_not_found / policy_not_found / route_not_found、409 trip_already_exists / claim_not_eligible / checklist_mismatch、502 trip_unavailable / policy_unavailable / flight_unavailable、500 internal_error。
-- 測試帳號(seed,對應見 `seed_dynamodb.py` 的 `ACCOUNTS`):Cognito 帳號 0912345678(最常用)異常且已立案、0911111111 正常旅程、0922222222 有保單無旅程、0933333333 無旅程無保單。console 直接測 Lambda 用假 sub:user-001 正常、user-002 無旅程、user-003 異常。
+- 測試帳號(seed,對應見 `seed_dynamodb.py` 的 `ACCOUNTS`):Cognito 帳號 0912345678(最常用)異常且已立案、0911111111 正常旅程、0922222222 有保單無旅程、0933333333 無旅程無保單。console 直接測 Lambda 用假 sub:user-001 正常、user-002 無旅程、user-003 異常。各帳號測試案例見 `test-accounts.md`。
 
 ## Tool Lambda「get-custom-info」(AgentCore Gateway 用，依 `agent-tool-interface-contract-v1.md`)
 - 檔案:`get_custom_info.py`(import `trip_management` 重用資料表元件與組裝函式，部署時兩個檔案一起放)、`test_get_custom_info.py`(29 個)。

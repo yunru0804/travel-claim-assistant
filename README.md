@@ -145,7 +145,7 @@ Cognito 測試帳號(前端 / API Gateway 測試用):
 | `0922222222` | 有保單、沒有旅程(可從前端建立旅程) |
 | `0933333333` | 沒有旅程也沒有保單 |
 
-console 直接呼叫 Lambda 的測試用假 sub:`user-001` 正常、`user-002` 沒有旅程、`user-003` 異常。sub 與情境的對應見 `seed_dynamodb.py` 的 `ACCOUNTS`。
+console 直接呼叫 Lambda 的測試用假 sub:`user-001` 正常、`user-002` 沒有旅程、`user-003` 異常。sub 與情境的對應見 `seed_dynamodb.py` 的 `ACCOUNTS`,各帳號的測試案例見 [test-accounts.md](test-accounts.md)。
 
 ## 安全注意事項
 
