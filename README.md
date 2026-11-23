@@ -136,11 +136,16 @@ python -m unittest test_trip_management test_get_custom_info -v
 
 ### 測試帳號(seed 假資料)
 
-| sub | 情境 |
+Cognito 測試帳號(前端 / API Gateway 測試用):
+
+| 手機 | 情境 |
 |---|---|
-| `user-001` | 正常狀態旅程 |
-| `user-002` | 沒有旅程 |
-| `user-003` | 異常狀態旅程,延誤 5 小時,已達理賠門檻並立案 |
+| `0912345678`(最常用) | 異常狀態旅程,延誤 5 小時,已達理賠門檻並立案 |
+| `0911111111` | 正常狀態旅程 |
+| `0922222222` | 有保單、沒有旅程(可從前端建立旅程) |
+| `0933333333` | 沒有旅程也沒有保單 |
+
+console 直接呼叫 Lambda 的測試用假 sub:`user-001` 正常、`user-002` 沒有旅程、`user-003` 異常。sub 與情境的對應見 `seed_dynamodb.py` 的 `ACCOUNTS`。
 
 ## 安全注意事項
 

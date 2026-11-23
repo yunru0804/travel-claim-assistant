@@ -5,12 +5,14 @@
 Policies / Flights 沿用舊版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
 Weather 主鍵改為 city + forecast_time:若既有 Weather 表是舊主鍵,須先在 console 刪表再執行。
 
-測試帳號:
-  user-001:正常狀態旅程(BR192)
-  user-002:沒有旅程,GET 回 {}
-  user-003:異常狀態旅程(CI100 延誤 5 小時,已達理賠門檻並立案)
+測試帳號(ACCOUNTS):
+  normal      正常狀態旅程(BR192)
+  abnormal    異常狀態旅程(CI100 延誤 5 小時,已達理賠門檻並立案)
+  policy_only 有保單、沒有旅程(GET 回 {},可從前端建立旅程)
+  沒列出的 sub 沒有旅程也沒有保單
+user-001 / user-003 給 console 直接呼叫 Lambda 的測試用;其餘是 Cognito 測試帳號的 sub。
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal  # boto3 的 DynamoDB 不接受 float,數字要用 Decimal
 
 import boto3
@@ -32,50 +34,63 @@ POLICY = {
     "policyholder_name": "王小明",
     "product_name": "國泰安心遊日本 5 日型",
     "coverage_start": "2026-11-01",
-    "coverage_end": "2026-11-30",
+    "coverage_end": "2027-02-28",  # 與航班、天氣資料的結束日相同
     "coverages": [
         {"label": "海外突發醫療", "amount": 1000000},
         {"label": "班機延誤保險金", "amount": 5000},
     ],
 }
 
-POLICIES = [
-    {"sub": "user-001", "policies": [POLICY]},
-    {"sub": "user-003", "policies": [dict(POLICY, policy_number="TA-20261103-03", policyholder_name="陳美玲")]},
-]
+NORMAL_TRIP = {
+    "flight_number": "BR192", "departure_date": "2026-11-20",
+    "created_at": "2026-11-02T03:00:00Z", "updated_at": "2026-11-02T03:00:00Z",
+}
 
-TRIPS = [
-    {
-        "sub": "user-001",
-        "flight_number": "BR192", "departure_date": "2026-11-20",
-        "created_at": "2026-11-02T03:00:00Z", "updated_at": "2026-11-02T03:00:00Z",
+ABNORMAL_TRIP = {
+    "flight_number": "CI100", "departure_date": "2026-11-20",
+    "created_at": "2026-11-02T03:00:00Z", "updated_at": "2026-11-20T05:15:00Z",
+    # 以下三個欄位之後由事件驅動流程寫入,這裡先手動放假資料
+    "trip_status": {
+        "state": "ABNORMAL", "type": "FLIGHT_DELAY",
+        "message": "航班延誤監測中・已超過 4 小時", "updated_at": "2026-11-20T05:15:00Z",
     },
-    {
-        "sub": "user-003",
-        "flight_number": "CI100", "departure_date": "2026-11-20",
-        "created_at": "2026-11-02T03:00:00Z", "updated_at": "2026-11-20T05:15:00Z",
-        # 以下三個欄位之後由事件驅動流程寫入,這裡先手動放假資料
-        "trip_status": {
-            "state": "ABNORMAL", "type": "FLIGHT_DELAY",
-            "message": "航班延誤監測中・已超過 4 小時", "updated_at": "2026-11-20T05:15:00Z",
-        },
-        "disruption": {
-            "type": "FLIGHT_DELAY", "title": "航班延誤",
-            "description": "航班預計延誤 5 小時,請確認最新航班安排並保留航空公司異動通知。",
-            "occurred_at": "2026-11-20T01:15:00Z", "delay_minutes": 300,
-        },
-        "delay_claim": {
-            "eligible": True, "estimated_benefit_amount": 5000,
-            "case_status": "CREATED", "case_status_text": "系統已快速立案",
-            "checklist": [
-                {"label": "原班機登機證", "is_ready": True},
-                {"label": "航司班機延誤證明書", "is_ready": False},
-            ],
-        },
+    "disruption": {
+        "type": "FLIGHT_DELAY", "title": "航班延誤",
+        "description": "航班預計延誤 5 小時,請確認最新航班安排並保留航空公司異動通知。",
+        "occurred_at": "2026-11-20T01:15:00Z", "delay_minutes": 300,
     },
-]
+    "delay_claim": {
+        "eligible": True, "estimated_benefit_amount": 5000,
+        "case_status": "CREATED", "case_status_text": "系統已快速立案",
+        "checklist": [
+            {"label": "原班機登機證", "is_ready": True},
+            {"label": "航司班機延誤證明書", "is_ready": False},
+        ],
+    },
+}
 
-FLIGHTS = [
+# 情境 -> (旅程, 保單);None 表示沒有
+SCENARIOS = {
+    "normal": (NORMAL_TRIP, POLICY),
+    "abnormal": (ABNORMAL_TRIP, dict(POLICY, policy_number="TA-20261103-03", policyholder_name="陳美玲")),
+    "policy_only": (None, dict(POLICY, policy_number="TA-20261103-02", policyholder_name="林志豪")),
+}
+
+# sub -> 情境
+ACCOUNTS = {
+    "user-001": "normal",
+    "user-003": "abnormal",
+    "7418a408-c0f1-7075-63a4-744c1fd3acbd": "abnormal",     # 0912345678(最常用)
+    "d488e428-2031-7037-ac17-74669afe7f54": "normal",       # 0911111111
+    "74d8e4d8-a071-707b-4b1d-becd9026c0b1": "policy_only",  # 0922222222
+    # 0933333333(3478e488-3041-7097-f07a-f4ac2f21debb)不寫入任何資料:沒有旅程也沒有保單
+}
+
+TRIPS = [dict(SCENARIOS[s][0], sub=sub) for sub, s in ACCOUNTS.items() if SCENARIOS[s][0]]
+POLICIES = [{"sub": sub, "policies": [SCENARIOS[s][1]]} for sub, s in ACCOUNTS.items()]
+
+# seed 旅程用的航班(CI100 這天延誤)
+TRIP_FLIGHTS = [
     {
         "flight_no": "BR192", "departure_date": "2026-11-20",
         "origin_airport": "TPE", "destination_airport": "NRT",
@@ -93,6 +108,34 @@ FLIGHTS = [
         "baggage_carousel_text": "行李轉盤 4 號",
     },
 ]
+
+# 每日航班:BR192 / CI100 從執行當天到 FLIGHT_END_DATE 每天一班、都準時,讓前端新建立的旅程查得到航班。
+# 與 TRIP_FLIGHTS 同一天的不產生,不會蓋掉 seed 旅程的延誤資料。
+FLIGHT_END_DATE = date(2027, 2, 28)
+DAILY_FLIGHT_NUMBERS = ("BR192", "CI100")
+
+
+def build_daily_flights(now):
+    fixed = {(f["flight_no"], f["departure_date"]) for f in TRIP_FLIGHTS}
+    day = (now - timedelta(hours=12)).date()  # 旅程 API 以 UTC-12 判斷「今天」,從那天開始產生
+    items = []
+    while day <= FLIGHT_END_DATE:
+        departure_date = day.isoformat()
+        for flight_no in DAILY_FLIGHT_NUMBERS:
+            if (flight_no, departure_date) in fixed:
+                continue
+            items.append({
+                "flight_no": flight_no, "departure_date": departure_date,
+                "origin_airport": "TPE", "destination_airport": "NRT",
+                "scheduled_departure": f"{departure_date}T10:15:00+08:00",
+                "scheduled_arrival": f"{departure_date}T14:30:00+09:00",
+                "terminal_gate_text": "第一航廈・登機門 B6",
+            })
+        day += timedelta(days=1)
+    return items
+
+
+FLIGHTS = TRIP_FLIGHTS + build_daily_flights(datetime.now(timezone.utc))
 
 # 天氣:只放日本城市,從執行當天 00:00(UTC)起到 WEATHER_END_DATE,每 3 小時一筆。
 # 以執行當天為起點,之後重跑 seed 資料仍會涵蓋「現在」。
