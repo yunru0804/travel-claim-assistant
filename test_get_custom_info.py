@@ -1,10 +1,12 @@
+import sys
 import unittest
 from decimal import Decimal
+from unittest import mock
 
 import get_custom_info as gci
-import trip_management as tm
-from test_trip_management import (ABNORMAL_TRIP, FLIGHT, NOW, NOW_ISO, OTHER_POLICY, POLICY, TRIP,
-                                  FakeFlights, FakePolicies, FakeTrips, FakeWeather)
+import trip_stores as stores
+from test_trip_stores import (ABNORMAL_TRIP, FLIGHT, NOW, NOW_ISO, OTHER_POLICY, PLAN, POLICY, TRIP,
+                              FakeFlights, FakePlans, FakePolicies, FakeTrips, FakeWeather)
 
 WEATHER_ITEM = {"city": "東京", "forecast_time": "2026-11-02T03:00:00Z", "condition_code": "PARTLY_CLOUDY",
                 "temperature_c": Decimal("16.5"), "rain_probability_percent": Decimal("10"),
@@ -16,15 +18,48 @@ def make_deps(trip=TRIP, **overrides):
     parts = {
         "trips": FakeTrips({"sub-1": trip} if trip else {}),
         "policies": FakePolicies({"sub-1": [OTHER_POLICY, POLICY]}),
+        "plans": FakePlans({"T6": PLAN}),
         "flights": FakeFlights({("BR192", "2026-11-03"): FLIGHT}),
         "weather": FakeWeather({("東京", NOW): WEATHER_ITEM, ("大阪", NOW): OSAKA_WEATHER_ITEM}),
     }
     parts.update(overrides)
-    return tm.Deps(**parts, now=lambda: NOW)
+    return stores.Deps(**parts, now=lambda: NOW)
 
 
 def call(sections, deps=None, sub="sub-1", **extra):
     return gci.handle({"sections": sections, **extra}, deps or make_deps(), sub)
+
+
+class PlanCsvTest(unittest.TestCase):
+    """seed_dynamodb 讀 CSV 的結果;seed 會 import boto3,測試用不到 AWS,以 stub 取代。"""
+
+    @classmethod
+    def setUpClass(cls):
+        with mock.patch.dict(sys.modules, {"boto3": mock.MagicMock()}):
+            import seed_dynamodb
+        cls.plans = {p["project_code"]: p for p in seed_dynamodb.load_plans()}
+
+    def item(self, code, sub_id):
+        return next(c for c in self.plans[code]["coverages"] if c["sub_id"] == sub_id)
+
+    def test_plan_level_columns_come_from_first_row(self):
+        self.assertEqual({c: len(p["coverages"]) for c, p in self.plans.items()}, {"T6": 28, "U3": 31, "U6": 33})
+        self.assertEqual([p["plan_name"] for p in self.plans.values()], ["輕鬆定額型", "豪華定額型", "豪華寵旅型"])
+        self.assertEqual(self.plans["U6"]["not_covered"], ["租車事故慰問", "特殊活動取消慰問"])
+        self.assertEqual(len(self.plans["T6"]["not_covered"]), 7)
+        self.assertEqual(len(self.plans["T6"]["notes"]), 1)
+
+    def test_restrictions_are_split(self):
+        self.assertEqual(len(self.item("T6", "2H")["restrictions"]), 2)
+        self.assertEqual(len(self.item("U3", "2I")["restrictions"]), 6)
+        self.assertNotIn("restrictions", self.item("T6", "2K"))
+
+    def test_note_and_amount(self):
+        self.assertEqual(self.item("T6", "2K")["note"], "六小時 3,000 元,最多可理賠 2 次")
+        self.assertEqual(self.item("U6", "3T")["note"], "每日 1,200 元，最高給付 5 日")
+        self.assertEqual(self.item("U3", "2I")["amount"], Decimal("12000.00"))
+        self.assertIsNone(self.item("T6", "21")["amount"])  # 金額空白 = 依條款約定
+        self.assertEqual(self.item("T6", "21")["amount_type_name"], "限定額")
 
 
 class EnvelopeTest(unittest.TestCase):
@@ -67,11 +102,32 @@ class SectionsTest(unittest.TestCase):
             "rainProbabilityPercent": 10, "forecastTime": "2026-11-02T03:00:00Z",
             "updatedAt": "2026-11-01T00:00:00Z"}})
 
-    def test_policy_summary_masks_number(self):
+    def test_policy_summary_masks_number_and_groups_plan(self):
         self.assertEqual(call(["policy_summary"])["data"], {"policySummary": {
-            "productName": "國泰安心遊日本 5 日型", "policyNumberMasked": "TA-2026****-01",
+            "productName": "輕鬆定額型", "projectCode": "T6", "policyNumberMasked": "TA-2026****-01",
             "statusText": "保障生效中",
-            "coverages": [{"label": "海外突發醫療", "amount": 1000000}, {"label": "班機延誤保險金", "amount": 5000}],
+            "plan": {
+                "notCovered": ["租車事故慰問"],
+                "notes": ["僅載列部分重要理賠限制事項"],
+                "coverageGroups": [
+                    {"productMainId": "P41", "name": "海外旅行不便保險", "items": [
+                        {"subId": "2I", "name": "班機延誤費用", "nameEn": "班機延誤費用 EN", "amount": 6000,
+                         "currency": "NTD", "payoutMethod": "定額",
+                         "note": "每四小時 3,000 元, 每次最高 6,000 元, 最多可理賠2次",
+                         "restrictions": ["戰爭不給付"]},
+                        {"subId": "2K", "name": "行李延誤費用", "nameEn": "行李延誤費用 EN", "amount": 3000,
+                         "currency": "NTD", "payoutMethod": "定額", "note": None, "restrictions": []},
+                    ]},
+                    {"productMainId": "P54", "name": "個人海外旅行補償保險", "items": [
+                        {"subId": "3E", "name": "劫機保險費用", "nameEn": "劫機保險費用 EN", "amount": 3000,
+                         "currency": "NTD", "payoutMethod": "日額", "note": "最高給付 10 日", "restrictions": []},
+                    ]},
+                    {"productMainId": "PAB", "name": "20意外險", "items": [
+                        {"subId": "21", "name": "身故及失能保險金", "nameEn": "身故及失能保險金 EN", "amount": None,
+                         "currency": "NTD", "payoutMethod": "限定額", "note": None, "restrictions": []},
+                    ]},
+                ],
+            },
         }})
 
     def test_only_requested_sections(self):
@@ -139,6 +195,18 @@ class NullableTest(unittest.TestCase):
         self.assertEqual(call(["policy_summary"], make_deps(policies=FakePolicies()))["data"],
                          {"policySummary": None})
 
+    def test_plan_missing_returns_null_plan(self):
+        policy_without_code = dict(POLICY, project_code=None)
+        cases = {
+            "no plan record": make_deps(plans=FakePlans({})),
+            "no project_code": make_deps(policies=FakePolicies({"sub-1": [policy_without_code]})),
+        }
+        for name, deps in cases.items():
+            with self.subTest(name=name):
+                summary = call(["policy_summary"], deps)["data"]["policySummary"]
+                self.assertEqual((summary["productName"], summary["projectCode"], summary["plan"]),
+                                 (None, "T6" if name == "no plan record" else None, None))
+
 
 class ErrorTest(unittest.TestCase):
     def assert_error(self, result, code, retryable=False):
@@ -180,6 +248,7 @@ class ErrorTest(unittest.TestCase):
             "trips": (["flight_status"], FakeTrips(error=RuntimeError("down"))),
             "flights": (["flight"], FakeFlights(error=RuntimeError("down"))),
             "policies": (["policy_summary"], FakePolicies(error=RuntimeError("down"))),
+            "plans": (["policy_summary"], FakePlans(error=RuntimeError("down"))),
         }
         for name, (sections, fake) in cases.items():
             with self.subTest(name=name):

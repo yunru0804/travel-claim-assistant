@@ -15,13 +15,15 @@
 - Lambda 分組:`trip-management`(`/v1/trip*`)、`push-subscription`、`chat-send`(`POST /v1/chat/messages`)、`conversation-management`(其餘 `/v1/conversations*`)。每支 Lambda 內用 `(httpMethod, resource)` 分派路由。
 
 ## 目前進度:Lambda「旅程管理」(新版,依 05、06 規格)
-- 檔案:`trip_management.py`(Lambda)、`test_trip_management.py`(45 個單元測試)、`seed_dynamodb.py`(建表+假資料)。
+- 檔案:`trip_management.py`(Lambda,由其他人維護)、`test_trip_management.py`(45 個單元測試)、`seed_dynamodb.py`(建表+假資料)。
+- `trip_stores.py`:get-custom-info 專用的唯讀 DynamoDB 元件(Store / Deps)與資料整理函式,不含任何 API 路由;`test_trip_stores.py`(11 個)。`trip_management.py` 由其他人維護、不動,兩邊互不 import。
 - 執行測試:`python -m unittest test_trip_management -v`
 - 已完成:`POST /v1/trip`、`PUT /v1/trip/flight`、`GET /v1/trip`、`PATCH /v1/trip/claim/checklist`。尚未完成：推播訂閱(`push-subscription` Lambda)、Web Push 發送。
 - 使用者身分只從 API Gateway 驗證後的 `requestContext.authorizer.claims.sub` 取得,不接受 body / query 帶入的 ID。
 - DynamoDB 資料表(Policies / Flights 沿用舊版表名與主鍵，屬性改新版):
   - Trips:PK `sub`,屬性 flight_number / departure_date / created_at / updated_at,以及事件驅動流程寫入的 trip_status / disruption / delay_claim。讀取用 ConsistentRead(POST 後立即 GET)。
-  - Policies:PK `sub`,屬性 `policies`(policy_number / policyholder_name / product_name / coverage_start / coverage_end / coverages)
+  - Policies:PK `sub`,屬性 `policies`(policy_number / policyholder_name / project_code / coverage_start / coverage_end)。保單只存方案代碼 project_code,方案名稱(productName)與保障項目都由 Plans 提供(`trip_stores.py`;原版 `trip_management.py` 仍讀 product_name / coverages)
+  - Plans:PK `project_code`(T6 / U3 / U6),屬性 plan_name / not_covered / notes(方案層)與 `coverages`(product_main_id / product_public_name / sub_id / name / name_en / amount(可為 null)/ currency / amount_type_name / note / restrictions)。全部來自 `方案資訊_t6_u3_u6.csv`,由 `seed_dynamodb.py` 讀取寫入:理賠方式(次數/日數上限、給付規則、自負額)放 NOTE 欄,不給付情況放 RESTRICTIONS 欄(以 | 分隔),PLAN_NAME / PLAN_NOT_COVERED / PLAN_NOTE 只填在每個方案第一列。`trip_stores.py` 讀此表,Tool 回傳依 product_main_id 分組的 `policySummary.plan`
   - Flights:PK `flight_no`,SK `departure_date`,屬性 origin_airport / destination_airport / scheduled_departure / scheduled_arrival / estimated_arrival / terminal_gate_text / baggage_carousel_text
   - Weather:PK `city`(中文城市名)、SK `forecast_time`(UTC ISO),屬性 condition_code / temperature_c / rain_probability_percent / updated_at。每 3 小時一筆，讀取時 Query 現在往前 3 小時內最新一筆，沒有則 weather 回 null。seed 只放日本 4 城市(東京、大阪、福岡、沖繩),從執行當天起到日本時間 2027-02-28,溫度依月份變化，冬季低溫雨天為 SNOW。
   - ExchangeRates:PK `currency`,屬性 rate_per_twd
@@ -35,13 +37,13 @@
 - 測試帳號(seed,對應見 `seed_dynamodb.py` 的 `ACCOUNTS`):Cognito 帳號 0912345678(最常用)異常且已立案、0911111111 正常旅程、0922222222 有保單無旅程、0933333333 無旅程無保單。console 直接測 Lambda 用假 sub:user-001 正常、user-002 無旅程、user-003 異常。各帳號測試案例見 `test-accounts.md`。
 
 ## Tool Lambda「get-custom-info」(AgentCore Gateway 用，依 `agent-tool-interface-contract-v1.md`)
-- 檔案:`get_custom_info.py`(import `trip_management` 重用資料表元件與組裝函式，部署時兩個檔案一起放)、`test_get_custom_info.py`(29 個)。
-- 執行全部測試:`python -m unittest test_trip_management test_get_custom_info`
+- 檔案:`get_custom_info.py`(import `trip_stores` 取得資料表元件與資料整理函式，部署時兩個檔案一起放)、`test_get_custom_info.py`(33 個)。
+- 執行全部測試:`python3 -m unittest test_trip_management test_trip_stores test_get_custom_info`
 - 輸入 `{"sections": [...]}`(flight / flight_status / weather / policy_summary),選填 `weatherCity`(enum:東京 / 大阪 / 福岡 / 沖繩,`WEATHER_CITIES`)查目的地以外的天氣;只要 weather + weatherCity 時不需要旅程。回傳合約 envelope(schemaVersion / status / source / data / error),data 只放要求的類別。
 - 身分：尚未定案，目前只讀環境變數 `MOCK_SUB`;沒設定回 UNAUTHORIZED,不 fallback、不從 event 取。定案後只改 `resolve_sub`。
 - 自行決定(合約未定):天氣失敗或無近 3 小時資料 → weather null;無涵蓋出發日的保單 → policySummary null;Flights 查無或資料不完整 → NOT_FOUND;DynamoDB 失敗 → SERVICE_UNAVAILABLE(retryable);非預期例外直接丟出。
-- 只讀 IAM:Trips / Policies / Flights GetItem,Weather Query。部署與測試見 `get-custom-info-console-tests.md`。
-- 給團隊的回覆:`agent-tool-interface-contract-v1-trip-reply.md`。旅程管理端已確認(2026-11-11):Tool 直接讀 DB 並共用 `trip_management.py`,不透過 HTTP 呼叫旅程管理 API;不需要 partial_success,天氣查不到回 null、整體仍為 success。
+- 只讀 IAM:Trips / Policies / Flights / Plans GetItem,Weather Query(環境變數多 `PLAN_TABLE`)。部署與測試見 `get-custom-info-console-tests.md`。
+- 給團隊的回覆:`agent-tool-interface-contract-v1-trip-reply.md`。旅程管理端已確認(2026-11-11):Tool 直接讀 DB 並共用 `trip_management.py`,不透過 HTTP 呼叫旅程管理 API;不需要 partial_success,天氣查不到回 null、整體仍為 success。之後(2026-11-24)因 trip-management 由其他人維護，改成 get-custom-info 自己的 `trip_stores.py`(只含讀 DB 的元件與資料整理，不含 API 邏輯)。
 
 ## 部署環境
 - **AWS region:`us-east-1`**(維吉尼亞北部)。所有資源(DynamoDB、Lambda、API Gateway、Cognito…)都建在這個 region;IAM 是全域。

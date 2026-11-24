@@ -92,13 +92,28 @@ Gateway 註冊時請使用這份:
       "updatedAt": "2026-11-11T14:53:44Z"
     },
     "policySummary": {
-      "productName": "國泰安心遊日本 5 日型",
+      "productName": "豪華定額型",
+      "projectCode": "U3",
       "policyNumberMasked": "TA-2026****-03",
       "statusText": "保障生效中",
-      "coverages": [
-        { "label": "海外突發醫療", "amount": 1000000 },
-        { "label": "班機延誤保險金", "amount": 5000 }
-      ]
+      "plan": {
+        "notCovered": ["行動電話被竊損失費用", "租車事故慰問", "特殊活動取消慰問", "寵物寄宿延長補償費用"],
+        "notes": ["保障內容為加保保額固定；僅載列部分重要理賠限制事項，其他未載列事項請詳閱保險單條款"],
+        "coverageGroups": [
+          {
+            "productMainId": "P41",
+            "name": "海外旅行不便保險",
+            "items": [
+              {
+                "subId": "2I", "name": "班機延誤費用", "nameEn": "Flight Delay", "amount": 12000,
+                "currency": "NTD", "payoutMethod": "定額",
+                "note": "每四小時 6,000 元,每次最高 12,000 元, 最多可理賠2次",
+                "restrictions": ["因戰爭造成班機延誤或取消(如美伊戰爭、以伊戰爭、俄烏戰爭等)，無法申請", "…共 6 條"]
+              }
+            ]
+          }
+        ]
+      }
     }
   },
   "error": null
@@ -111,6 +126,12 @@ Gateway 註冊時請使用這份:
 - `flight` 比合約範例多了城市、表定／預計時間、登機門、行李轉盤。時間為含時差的 ISO 格式(出發地／目的地當地時間),模型可直接回答「幾點抵達」。`estimatedArrival` 沒有時為 `null`。
 - `weather` 多了 `city`(讓模型知道是哪個城市)與 `forecastTime`(這筆天氣代表的時間點)。`updatedAt` 為資料寫入時間,與合約 3.3 的 `retrievedAt` 區分。
 - `conditionCode` 與前端 Dashboard 相同:`SUNNY`、`PARTLY_CLOUDY`、`CLOUDY`、`RAIN`、`THUNDERSTORM`、`SNOW`。
+- `policySummary.plan` 是保單所屬方案(Policies 的 `project_code` 對應 Plans 表)的保障內容,來源是公司正式的方案資訊 CSV,依保障類別分組(上面範例只列一項)。查無方案時 `plan` 為 `null`。取代合約建議的 `coverages[]`。每個項目:
+  - `amount`:`null` 代表沒有固定金額(依條款約定),不是 0,模型不可自行推測金額。
+  - `payoutMethod`:給付方式,如 `定額`(固定金額)、`限額`(以金額為上限)、`日額`、`日限額`、`限定額`。
+  - `note`:理賠方式說明,如「最多可理賠 2 次」「最高給付 10 日」「每四小時 6,000 元,每次最高 12,000 元」「每一事故自負額 2,500 元」「不含傳染病及檢疫」。沒有 `note` 時不代表沒有次數或日數上限(例如意外險、突發疾病尚無這類資料)。
+  - `restrictions`:不給付或限制給付的情況(旅程取消 2 條、班機延誤 6 條)。
+  - `productName` 是方案名稱(Plans 的 `plan_name`),`projectCode` 是保單的方案代碼;兩者在 `plan` 之外。`plan` 內為方案層的 `notes`(含「僅載列部分重要限制,其他請詳閱條款」,Agent 應提醒以保單條款為準);`notCovered` 是這個方案沒有的項目,被問到時應回答未承保。
 
 ## 3. 第 10 節待定項目:旅程管理端建議
 

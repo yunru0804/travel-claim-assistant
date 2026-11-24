@@ -1,19 +1,27 @@
 """建立旅程管理 Lambda 用的 DynamoDB 表,並寫入假資料。
 
 在 AWS CloudShell 執行:  python3 seed_dynamodb.py
-可重複執行:表已存在就跳過建立,資料用 put_item 覆蓋。
+可重複執行:表已存在就跳過建立,並先清空表內所有資料再寫入,所以每次執行的結果都一樣
+(包含測試時透過 API 新增或修改的資料、舊的天氣預報都會被清掉)。只在開發用帳號執行。
 Policies / Flights 沿用舊版的表名與主鍵,只換成新版的屬性;舊資料留著不影響。
 Weather 主鍵改為 city + forecast_time:若既有 Weather 表是舊主鍵,須先在 console 刪表再執行。
 
 測試帳號(ACCOUNTS):
-  normal      正常狀態旅程(BR192)
-  abnormal    異常狀態旅程(CI100 延誤 5 小時,已達理賠門檻並立案)
-  policy_only 有保單、沒有旅程(GET 回 {},可從前端建立旅程)
+  normal      正常狀態旅程(BR192),保單方案 T6
+  abnormal    異常狀態旅程(CI100 延誤 5 小時,已達理賠門檻並立案),保單方案 U3
+  policy_only 有保單、沒有旅程(GET 回 {},可從前端建立旅程),保單方案 T6
+  normal_u6   正常狀態旅程(BR192),保單方案 U6(user-005,測不同方案的保單摘要)
   沒列出的 sub 沒有旅程也沒有保單
-user-001 / user-003 給 console 直接呼叫 Lambda 的測試用;其餘是 Cognito 測試帳號的 sub。
+user-001 / user-003 / user-005 給 console 直接呼叫 Lambda 的測試用;其餘是 Cognito 測試帳號的 sub。
+
+Plans 表不是假資料,內容來自公司正式的方案資訊 CSV(與本檔放在同一個資料夾)。
+CSV 的 NOTE / RESTRICTIONS 欄放理賠方式,PLAN_NAME / PLAN_NOT_COVERED / PLAN_NOTE 是方案層資訊,
+只填在每個方案的第一列;RESTRICTIONS 與 PLAN_NOT_COVERED 的多筆內容以 | 分隔。
 """
+import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal  # boto3 的 DynamoDB 不接受 float,數字要用 Decimal
+from pathlib import Path
 
 import boto3
 
@@ -23,6 +31,7 @@ dynamodb = boto3.resource("dynamodb")
 TABLES = {
     "Trips": ("sub", None),
     "Policies": ("sub", None),
+    "Plans": ("project_code", None),
     "Flights": ("flight_no", "departure_date"),
     "Weather": ("city", "forecast_time"),
     "ExchangeRates": ("currency", None),
@@ -32,13 +41,9 @@ TABLES = {
 POLICY = {
     "policy_number": "TA-20261103-01",
     "policyholder_name": "王小明",
-    "product_name": "國泰安心遊日本 5 日型",
+    "project_code": "T6",  # 對應 Plans 表的 PK;方案名稱與保障內容都由方案表提供
     "coverage_start": "2026-11-01",
     "coverage_end": "2027-02-28",  # 與航班、天氣資料的結束日相同
-    "coverages": [
-        {"label": "海外突發醫療", "amount": 1000000},
-        {"label": "班機延誤保險金", "amount": 5000},
-    ],
 }
 
 NORMAL_TRIP = {
@@ -72,14 +77,18 @@ ABNORMAL_TRIP = {
 # 情境 -> (旅程, 保單);None 表示沒有
 SCENARIOS = {
     "normal": (NORMAL_TRIP, POLICY),
-    "abnormal": (ABNORMAL_TRIP, dict(POLICY, policy_number="TA-20261103-03", policyholder_name="陳美玲")),
+    "abnormal": (ABNORMAL_TRIP, dict(POLICY, policy_number="TA-20261103-03", policyholder_name="陳美玲",
+                                     project_code="U3")),
     "policy_only": (None, dict(POLICY, policy_number="TA-20261103-02", policyholder_name="林志豪")),
+    "normal_u6": (NORMAL_TRIP, dict(POLICY, policy_number="TA-20261103-05", policyholder_name="林志豪",
+                                    project_code="U6")),
 }
 
 # sub -> 情境
 ACCOUNTS = {
     "user-001": "normal",
     "user-003": "abnormal",
+    "user-005": "normal_u6",
     "7418a408-c0f1-7075-63a4-744c1fd3acbd": "abnormal",     # 0912345678(最常用)
     "d488e428-2031-7037-ac17-74669afe7f54": "normal",       # 0911111111
     "74d8e4d8-a071-707b-4b1d-becd9026c0b1": "policy_only",  # 0922222222
@@ -201,9 +210,50 @@ EXCHANGE_RATES = [
     {"currency": "KRW", "rate_per_twd": 43.2},
 ]
 
+PLAN_CSV = Path(__file__).with_name("方案資訊_t6_u3_u6.csv")
+
+
+def split_list(text):
+    return [part for part in text.split("|") if part]
+
+
+def load_plans(path=PLAN_CSV):
+    """讀方案資訊 CSV,一個方案(PROJECT_CODE)一筆,保障項目維持 CSV 順序。"""
+    plans = {}
+    with open(path, encoding="utf-8-sig", newline="") as f:  # 檔案開頭有 BOM
+        for row in csv.DictReader(f):
+            plan = plans.setdefault(row["PROJECT_CODE"], {
+                "project_code": row["PROJECT_CODE"], "plan_name": None, "not_covered": [], "notes": [],
+                "coverages": []})
+            # 方案層欄位只填在方案的第一列
+            if row["PLAN_NAME"]:
+                plan["plan_name"] = row["PLAN_NAME"]
+                plan["not_covered"] = split_list(row["PLAN_NOT_COVERED"])
+                plan["notes"] = split_list(row["PLAN_NOTE"])
+            coverage = {
+                "product_main_id": row["PRODUCT_MAIN_ID"],
+                "product_public_name": row["PRODUCT_PUBLIC_NAME"],
+                "sub_id": row["PRODUCT_SUB_ID"],
+                "name": row["PRODUCT_SUBID_NAME"],
+                "name_en": row["PRODUCT_SUBID_ENAME"],
+                "amount": Decimal(row["AMOUNT"]) if row["AMOUNT"] else None,  # 空白 = 依條款約定,沒有固定金額
+                "currency": row["CURRENCY"],
+                "amount_type_name": row["AMOUNT_TYPE_NAME"],
+            }
+            if row["NOTE"]:
+                coverage["note"] = row["NOTE"]
+            if row["RESTRICTIONS"]:
+                coverage["restrictions"] = split_list(row["RESTRICTIONS"])
+            plan["coverages"].append(coverage)
+    return list(plans.values())
+
+
+PLANS = load_plans()
+
 DATA = {
     "Trips": TRIPS,
     "Policies": POLICIES,
+    "Plans": PLANS,
     "Flights": FLIGHTS,
     "Weather": WEATHER,
     "ExchangeRates": EXCHANGE_RATES,
@@ -247,10 +297,32 @@ def create_table(name, pk, sk):
     print(f"{name}: 已建立")
 
 
+def clear_table(name, pk, sk):
+    """刪光表內所有資料(只留表本身),讓每次執行都從乾淨狀態開始。"""
+    table = dynamodb.Table(name)
+    key_names = [k for k in (pk, sk) if k]
+    scan_args = {
+        "ProjectionExpression": ", ".join(f"#k{i}" for i in range(len(key_names))),
+        "ExpressionAttributeNames": {f"#k{i}": k for i, k in enumerate(key_names)},
+    }
+    deleted = 0
+    with table.batch_writer() as batch:
+        while True:
+            page = table.scan(**scan_args)
+            for item in page["Items"]:
+                batch.delete_item(Key={k: item[k] for k in key_names})
+                deleted += 1
+            if "LastEvaluatedKey" not in page:
+                break
+            scan_args["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    print(f"{name}: 清除 {deleted} 筆舊資料")
+
+
 def main():
     print("Region:", dynamodb.meta.client.meta.region_name)
     for name, (pk, sk) in TABLES.items():
         create_table(name, pk, sk)
+        clear_table(name, pk, sk)
     for name, items in DATA.items():
         with dynamodb.Table(name).batch_writer() as batch:  # 每 25 筆一批寫入,天氣資料較多
             for item in items:

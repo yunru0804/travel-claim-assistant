@@ -1,7 +1,7 @@
 """AgentCore Gateway Tool Lambda:get-custom-info
 
 依 agent-tool-interface-contract-v1.md 第 3 節,查詢已授權旅客的航班、航班狀態、目的地天氣、保單摘要。
-重複使用 trip_management 的資料表元件與組裝函式,部署時兩個檔案要一起放進 Lambda。
+重複使用 trip_stores 的資料表元件與組裝函式,部署時兩個檔案要一起放進 Lambda。
 
 輸入:Gateway 傳入的 event 就是 Tool input,例如 {"sections": ["flight", "flight_status"]}
      (Gateway 實際的 event 格式需在整合時確認,log 會記下 event 的 key 方便比對)
@@ -20,16 +20,19 @@
   NOT_FOUND            需要航班資料(flight / weather),但 Flights 表查無這班或資料不完整
   SERVICE_UNAVAILABLE  DynamoDB 查詢失敗(retryable)
 天氣查詢失敗或沒有近 3 小時的資料時 weather 為 null;沒有保單涵蓋出發日期時 policySummary 為 null。
+policySummary.plan 是保單的方案(依 Policies 的 project_code 查 Plans 表)依保障類別分組的保障項目,
+含給付方式、備註(次數/日數上限、給付規則等)、限制事項與該方案沒有的項目(欄位說明見 agent-tool-interface-contract-v1-trip-reply.md);
+保單沒有 project_code 或查無該方案時 plan 為 null,其餘保單欄位照常回傳。
 非預期的程式錯誤不轉成業務錯誤,直接丟出讓 Lambda 平台記錄(合約第 5 節:平台例外與業務錯誤分開)。
 
-環境變數:TRIP_TABLE、POLICY_TABLE、FLIGHT_TABLE、WEATHER_TABLE、MOCK_SUB
-IAM:Trips、Policies、Flights 需要 GetItem;Weather 需要 Query。只給讀取權限。
+環境變數:TRIP_TABLE、POLICY_TABLE、FLIGHT_TABLE、WEATHER_TABLE、PLAN_TABLE、MOCK_SUB
+IAM:Trips、Policies、Flights、Plans 需要 GetItem;Weather 需要 Query。只給讀取權限。
 """
 import json
 import logging
 import os
 
-import trip_management as tm
+import trip_stores as stores
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -90,9 +93,9 @@ def build_flight(trip, flight):
         "flightNumber": trip["flight_number"],
         "departureDate": trip["departure_date"],
         "originAirportCode": origin,
-        "originCity": tm.AIRPORTS[origin][0],
+        "originCity": stores.AIRPORTS[origin][0],
         "destinationAirportCode": destination,
-        "destinationCity": tm.AIRPORTS[destination][0],
+        "destinationCity": stores.AIRPORTS[destination][0],
         # 含時差的 ISO 時間,模型可直接讀出當地時間
         "scheduledDeparture": flight["scheduled_departure"],
         "scheduledArrival": flight["scheduled_arrival"],
@@ -103,7 +106,7 @@ def build_flight(trip, flight):
 
 
 def build_flight_status(trip):
-    trip_status, disruption, _ = tm.build_status_parts(trip)
+    trip_status, disruption, _ = stores.build_status_parts(trip)
     return {
         "state": trip_status["state"],
         "delayMinutes": (disruption or {}).get("delayMinutes", 0),
@@ -117,7 +120,7 @@ def load_weather(deps, city, now):
     except Exception as exc:
         logger.warning("source=weather failed: %s", type(exc).__name__)
         return None
-    weather = tm.build_weather(item)
+    weather = stores.build_weather(item)
     if weather is None:
         return None
     return {"city": city, **weather, "forecastTime": item["forecast_time"], "updatedAt": item.get("updated_at")}
@@ -130,6 +133,46 @@ def load_flight(deps, trip):
     except (KeyError, TypeError) as exc:  # 查無航班(item 為 None)或資料不完整
         logger.error("flight data missing or incomplete: %s", type(exc).__name__)
         raise ToolError("NOT_FOUND")
+
+
+def build_plan(plan):
+    """把方案表的保障項目依保障類別(product_main_id)分組,保留原本順序。
+
+    amount 為 null 代表依條款約定,不是 0。note 是理賠方式的說明(次數/日數上限、給付規則、自負額等),
+    restrictions 是不給付或限制給付的情況。notCovered 列出這個方案沒有的項目,被問到時應回答未承保,不可推測。
+    """
+    if plan is None:
+        return None
+    groups = {}
+    for c in plan.get("coverages", []):
+        group = groups.setdefault(c["product_main_id"], {
+            "productMainId": c["product_main_id"], "name": c["product_public_name"], "items": []})
+        group["items"].append({
+            "subId": c["sub_id"],
+            "name": c["name"],
+            "nameEn": c.get("name_en"),
+            "amount": c.get("amount"),
+            "currency": c.get("currency"),
+            "payoutMethod": c.get("amount_type_name"),
+            "note": c.get("note"),
+            "restrictions": c.get("restrictions", []),
+        })
+    return {
+        "notCovered": plan.get("not_covered", []),
+        "notes": plan.get("notes", []),
+        "coverageGroups": list(groups.values()),
+    }
+
+
+def load_policy_summary(deps, policies, departure_date, now):
+    policy = stores.find_policy(policies, departure_date)
+    if policy is None:
+        return None
+    project_code = policy.get("project_code")
+    plan = _call("plan", deps.plans.get, project_code) if project_code else None
+    if plan is None:
+        logger.warning("plan not found for policy")
+    return {**stores.build_policy_summary(policy, now, plan), "plan": build_plan(plan)}
 
 
 def collect(sections, weather_city, deps, sub, now):
@@ -154,8 +197,7 @@ def collect(sections, weather_city, deps, sub, now):
 
     if "policy_summary" in sections:
         policies = _call("policy", deps.policies.fetch, sub)
-        policy = tm.find_policy(policies, trip["departure_date"])
-        data["policySummary"] = tm.build_policy(policy, now) if policy else None
+        data["policySummary"] = load_policy_summary(deps, policies, trip["departure_date"], now)
 
     return data
 
@@ -164,11 +206,11 @@ def envelope(now, data=None, code=None):
     body = {
         "schemaVersion": SCHEMA_VERSION,
         "status": "error" if code else "success",
-        "source": {"system": SOURCE_SYSTEM, "isMock": IS_MOCK, "retrievedAt": tm._iso(now)},
+        "source": {"system": SOURCE_SYSTEM, "isMock": IS_MOCK, "retrievedAt": stores.iso(now)},
         "data": None if code else data,
         "error": {"code": code, "message": ERROR_MESSAGES[code], "retryable": code in RETRYABLE} if code else None,
     }
-    return json.loads(json.dumps(body, default=tm._json_default))  # Decimal 轉成一般數字
+    return json.loads(json.dumps(body, default=stores.json_default))  # Decimal 轉成一般數字
 
 
 def handle(event, deps, sub):
@@ -190,7 +232,8 @@ _default_deps = None
 def _get_default_deps():
     global _default_deps
     if _default_deps is None:  # Lambda 暖機時重複使用,不必每次重建
-        _default_deps = tm.Deps(tm.TripStore(), tm.PolicyStore(), tm.FlightStore(), tm.WeatherStore())
+        _default_deps = stores.Deps(stores.TripStore(), stores.PolicyStore(), stores.FlightStore(),
+                                    stores.WeatherStore(), plans=stores.PlanStore())
     return _default_deps
 
 

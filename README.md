@@ -84,7 +84,9 @@ API Gateway(REST,Cognito Authorizer)
 ├── seed_dynamodb.py                  建立 DynamoDB 表並寫入假資料(在 CloudShell 執行)
 ├── trip-management-console-tests.md  Lambda console 手動測試腳本
 ├── get_custom_info.py                AgentCore Tool Lambda get-custom-info(Mock 身分)
-├── test_get_custom_info.py           get-custom-info 單元測試(29 個)
+├── trip_stores.py                    get-custom-info 讀 DynamoDB 的元件與資料整理(不含 API 路由),和 get_custom_info.py 一起部署
+├── test_trip_stores.py               trip_stores 單元測試(11 個)
+├── test_get_custom_info.py           get-custom-info 單元測試(33 個)
 ├── get-custom-info-console-tests.md  get-custom-info 部署與 console 測試
 ├── 05/06-*-v2.md、07-chat.md          API 規格(見上方)
 └── CLAUDE.md                         給 Claude Code 的專案說明
@@ -95,7 +97,8 @@ API Gateway(REST,Cognito Authorizer)
 | 資料表 | 主鍵 | 用途 |
 |---|---|---|
 | `Trips` | PK `sub` | 每位使用者一筆目前旅程,含航班與監控狀態、理賠資料 |
-| `Policies` | PK `sub` | 保單清單(要保人、保障期間、保障項目) |
+| `Policies` | PK `sub` | 保單清單(要保人、保障期間、方案代碼 `project_code`) |
+| `Plans` | PK `project_code` | 公司正式的保險方案(T6 / U3 / U6),每個方案一筆,含全部保障項目;內容來自 `方案資訊_t6_u3_u6.csv`(含理賠方式備註與限制事項欄位)。目前只有 get-custom-info 使用 |
 | `Flights` | PK `flight_no`、SK `departure_date` | 航班資料(起訖機場、表定/預計時間、登機門) |
 | `Weather` | PK `city`、SK `forecast_time` | 目的地天氣,每 3 小時一筆(假資料只有日本 4 個城市) |
 | `ExchangeRates` | PK `currency` | 匯率(1 TWD 可換多少外幣) |
@@ -107,7 +110,7 @@ API Gateway(REST,Cognito Authorizer)
 需要 Python 3.12。單元測試使用假的資料表物件,不需要 AWS 帳號,也不需要安裝 boto3。
 
 ```bash
-python -m unittest test_trip_management test_get_custom_info -v
+python -m unittest test_trip_management test_trip_stores test_get_custom_info -v
 ```
 
 修改程式後請先跑單元測試。
@@ -118,7 +121,7 @@ python -m unittest test_trip_management test_get_custom_info -v
 
 以 console 手動部署,詳細步驟與測試 event 見 [trip-management-console-tests.md](trip-management-console-tests.md)。
 
-1. **建表與假資料**:在 CloudShell 上傳並執行 `python3 seed_dynamodb.py`。
+1. **建表與假資料**:在 CloudShell 上傳 `seed_dynamodb.py` 與 `方案資訊_t6_u3_u6.csv`(放在同一個資料夾)並執行 `python3 seed_dynamodb.py`。
 2. **建立 Lambda**:Runtime Python 3.12,把 `trip_management.py` 的內容貼到 `lambda_function.py`,Handler 維持 `lambda_function.lambda_handler`。
 3. **一般設定**:Memory 512 MB、Timeout 10 秒(預設 128 MB / 3 秒冷啟動會逾時)。
 4. **環境變數**:
@@ -140,12 +143,12 @@ Cognito 測試帳號(前端 / API Gateway 測試用):
 
 | 手機 | 情境 |
 |---|---|
-| `0912345678`(最常用) | 異常狀態旅程,延誤 5 小時,已達理賠門檻並立案 |
-| `0911111111` | 正常狀態旅程 |
+| `0912345678`(最常用) | 異常狀態旅程,延誤 5 小時,已達理賠門檻並立案(方案 U3) |
+| `0911111111` | 正常狀態旅程(方案 T6) |
 | `0922222222` | 有保單、沒有旅程(可從前端建立旅程) |
 | `0933333333` | 沒有旅程也沒有保單 |
 
-console 直接呼叫 Lambda 的測試用假 sub:`user-001` 正常、`user-002` 沒有旅程、`user-003` 異常。sub 與情境的對應見 `seed_dynamodb.py` 的 `ACCOUNTS`,各帳號的測試案例見 [test-accounts.md](test-accounts.md)。
+console 直接呼叫 Lambda 的測試用假 sub:`user-001` 正常、`user-002` 沒有旅程、`user-003` 異常、`user-005` 正常且保單方案為 U6。sub 與情境的對應見 `seed_dynamodb.py` 的 `ACCOUNTS`,各帳號的測試案例見 [test-accounts.md](test-accounts.md)。
 
 ## 安全注意事項
 
