@@ -41,7 +41,8 @@ TABLES = {
 POLICY = {
     "policy_number": "TA-20261103-01",
     "policyholder_name": "王小明",
-    "project_code": "T6",  # 對應 Plans 表的 PK;方案名稱與保障內容都由方案表提供
+    "project_code": "T6",  # 對應 Plans 表的 PK
+    "product_name": "輕鬆定額型",  # 旅程 API 使用
     "coverage_start": "2026-11-01",
     "coverage_end": "2027-02-28",  # 與航班、天氣資料的結束日相同
 }
@@ -78,10 +79,10 @@ ABNORMAL_TRIP = {
 SCENARIOS = {
     "normal": (NORMAL_TRIP, POLICY),
     "abnormal": (ABNORMAL_TRIP, dict(POLICY, policy_number="TA-20261103-03", policyholder_name="陳美玲",
-                                     project_code="U3")),
+                                     project_code="U3", product_name="豪華定額型")),
     "policy_only": (None, dict(POLICY, policy_number="TA-20261103-02", policyholder_name="林志豪")),
     "normal_u6": (NORMAL_TRIP, dict(POLICY, policy_number="TA-20261103-05", policyholder_name="林志豪",
-                                    project_code="U6")),
+                                    project_code="U6", product_name="豪華寵旅型")),
 }
 
 # sub -> 情境
